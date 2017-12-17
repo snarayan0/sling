@@ -118,14 +118,8 @@ class Corpora:
     s = Corpora()
     s.documents = self.documents[start:end]
     return s
-  
 
 
-# In[26]:
-
-
-
-   
 class Action:
    SHIFT = 0
    STOP = 1
@@ -184,11 +178,6 @@ class Action:
      return s
          
 
-
-
-# In[31]:
-
-
 class Edge:
   def __init__(self, incoming=None, role=None, value=None):
     self.incoming = incoming
@@ -232,7 +221,6 @@ class TransitionGenerator:
     if frame in initialized:
       return
     initialized[frame] = True
-    #print "frame", hash(frame), frame.data(binary=False, shallow=True)
  
     info = frame_info.get(frame, None)
     if info is None:
@@ -240,7 +228,6 @@ class TransitionGenerator:
       frame_info[frame] = info
 
     pending = []
-    #print "init_info: ", frame.data(binary=False, shallow=True, byref=True)
     for role, value in frame:
        if not self.is_ref(value) or role == self._id or (role == self._isa and value.islocal()):
          continue
@@ -254,22 +241,15 @@ class TransitionGenerator:
            continue
            
          if value.islocal():
-           #print value.data(binary=False), value.store(), "is local"
            nb_info = frame_info.get(value, None)
-           #print "  role", role, "value", hash(value), value
-           #print "  nb info absent", (value not in frame_info), (nb_info is None)
            if nb_info is None:
-             #print "  creating new nb info"
              nb_info = FrameInfo(value)
              frame_info[value] = nb_info
-           #else:
-           #  print "  already present with edges:", len(nb_info.edges)
            nb_edge = Edge(incoming=True, role=role, value=frame)
            nb_info.edges.append(nb_edge)
            nb_edge.inverse = edge
            edge.inverse = nb_edge
            pending.append(value)
-           #print "  # edges for ", hash(value), value, "=", len(frame_info[value].edges)
          
     if info.type is None:
        info.type = self.thing_type
@@ -315,7 +295,6 @@ class TransitionGenerator:
    
    
   def generate(self, doc):
-    #print "new doc"
     frame_info = {}
     initialized = {}
     mentions_with_frames = []
@@ -414,8 +393,6 @@ class TransitionGenerator:
     return actions
          
          
-# In[110]:
-
 class FeatureSpec:
   def __init__(self, name, dim, vocab=None, activation=None, num_links=None):
     self.name = name
@@ -619,7 +596,7 @@ class Spec:
       
     # TODO: Write the following:
     # - Lexicons with their flags (e.g. normalize digits, suffix length)
-    # - Action table with 99% heuristic.
+    # - Action table.
     # - Feature specs.
     #
     # Does it make sense to write all this in one giant encoded SLING frame?
@@ -677,6 +654,19 @@ class ParserState:
     self.elaborate = []
     self.actions = []
 
+  def __repr__(self):
+    s = "C:" + str(self.current) + " in [" + str(self.begin) + ", " + str(self.end) + ")"
+    s += " " + str(len(self.frames)) + " frames"
+    for index, f in enumerate(self.attention):
+      if index == 10: break
+      s += "\n   - Attn " + str(index) + ":" + str(f.type) + " Creation:" + str(f.creation)
+      s += ", Focus:" + str(f.focus) + ", #Edges:" + str(len(f.edges))
+      s += " (" + str(len(f.spans)) + " spans)"
+      if len(f.spans) > 0:
+        for span in f.spans:
+          s += " [" + str(span.start) + ", " + str(span.end) + ")"
+    return s
+
   def compute_role_graph(self):
     if len(self.spec.actions.roles) == 0: return
     del self.graph
@@ -686,7 +676,6 @@ class ParserState:
       frame = self.attention[i]
       for role, value in frame.edges:
         role_id = self.spec.actions.role_indices.get(role, None)
-        #print "role", role, "has id", role_id
         if role_id is not None: self.graph.append((i, role_id, self.index(value)))
 
 
@@ -1044,8 +1033,7 @@ class Sempar(nn.Module):
     return self.ff_softmax(ff_hidden).view(self.spec.num_actions)
 
 
-  def forward(self, doc, train=False):
-    # Compute LSTM outputs.
+  def _get_lstm_outputs(self, doc):
     raw_features = self._raw_lstm_features(doc)
     length = len(doc.tokens)
 
@@ -1067,6 +1055,13 @@ class Sempar(nn.Module):
     rl_input = rl_lstm_inputs[inverse_indices].view(length, 1, -1)
     hidden = self._init_hidden()
     rl_out, _ = self.rl_lstm(rl_input, hidden)
+  
+    return (lr_out, rl_out, raw_features)
+
+
+  def forward(self, doc, train=False):
+    # Compute LSTM outputs.
+    lr_out, rl_out, _ = self._get_lstm_outputs(doc)
   
     # Run FF unit.
     state = ParserState(doc, self.spec)
@@ -1112,6 +1107,66 @@ class Sempar(nn.Module):
       return state
 
 
+  def trace(self, doc):
+    length = len(doc.tokens)
+    lr_out, rl_out, lstm_features = self._get_lstm_outputs(doc)
+
+    assert len(self.spec.lstm_features) == len(lstm_features)
+    for f in lstm_features:
+      assert len(f.offsets) == length
+
+    print length, "tokens in document"
+    for index, t in enumerate(doc.tokens):
+      print "Token", index, "=", t.word
+    print
+
+    state = ParserState(doc, self.spec)
+    actions = self.spec.actions
+    ff_activations = []
+    steps = 0
+    for gold_action in doc.gold:
+      print "State:", state
+      gold_index = actions.indices.get(gold_action, None)
+      assert gold_index is not None, "Unknown gold action %r" % gold_action
+
+      if state.current < state.end:
+        print "Now at token", state.current, "=", doc.tokens[state.current].word
+        for spec, f in zip(self.spec.lstm_features, lstm_features):
+          start = f.offsets[state.current - state.begin]
+          end = None
+          if state.current < state.end - 1:
+            end = f.offsets[state.current - state.begin + 1]
+          print "  LSTM feature:", spec.name, ", indices=", f.indices[start:end]
+
+      ff_output = self._get_ff_output(lr_out, rl_out, ff_activations, state)
+      assert ff_output.view(1, -1).size(1) == self.spec.num_actions
+
+      assert state.is_allowed(gold_index), "Disallowed gold action: %r" % gold_action
+      state.advance(gold_action)
+      print "Step", steps, ": advancing using gold action", gold_action
+      print
+      steps += 1
+
+
+def train(sempar, corpora):
+  optimizer = optim.Adam(sempar.parameters())
+  for epoch in xrange(2000):
+    optimizer.zero_grad()
+    loss = sempar.forward(corpora.documents[epoch % train.size()], train=True)
+    print "Epoch", epoch, "Loss", loss.data[0]
+    loss.backward()
+    optimizer.step()
+
+  doc = corpora.documents[0]
+  for t in doc.tokens:
+    print "Token", t.word
+  for g in doc.gold:
+    print "Gold", g
+  state = sempar.forward(doc, train=False)
+  for a in state.actions:
+    print "Predicted", a
+
+
 def trial_run():
   commons = sling.Store()
   commons.load("/home/grahul/sempar_ontonotes/commons.new")
@@ -1127,22 +1182,6 @@ def trial_run():
   spec = Spec()
   spec.build(commons, train)
   sempar = Sempar(spec)
-
-  optimizer = optim.Adam(sempar.parameters())
-  for epoch in xrange(2000):
-    optimizer.zero_grad()
-    loss = sempar.forward(train.documents[epoch % train.size()], train=True)
-    print "Epoch", epoch, "Loss", loss.data[0]
-    loss.backward()
-    optimizer.step()
-
-  doc = train.documents[0]
-  for t in doc.tokens:
-    print "Token", t.word
-  for g in doc.gold:
-    print "Gold", g
-  state = sempar.forward(doc, train=False)
-  for a in state.actions:
-    print "Predicted", a
+  sempar.trace(train.documents[1])
 
 trial_run()
