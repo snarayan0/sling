@@ -1,9 +1,9 @@
+import random
 import torch
 import torch.autograd as autograd
 import torch.nn as nn
 import torch.optim as optim
 import sling
-import zipfile
 
 Var = autograd.Variable
 torch.manual_seed(1)
@@ -16,6 +16,8 @@ class Lexicon:
     self.oov_item = oov_item
     self.oov_index = 0   # OOV is always at position 0
     self.normalize_digits = normalize_digits
+    self.item_to_index = {}
+    self.index_to_item = {}
 
     
   def _key(self, item):
@@ -33,8 +35,6 @@ class Lexicon:
 
     
   def finalize(self):
-    self.item_to_index = {}
-    self.index_to_item = {}
     self.index_to_item[self.oov_index] = self.oov_item
     self.item_to_index[self.oov_item] = self.oov_index
     for item, count in self.counts.iteritems():
@@ -55,6 +55,11 @@ class Lexicon:
       return self.oov_index
     else:
       return self.item_to_index[item]
+
+
+  def value(self, index):
+    assert index >= 0 and index < len(self.index_to_item), "%r" % index
+    return self.index_to_item[index]
     
 
 class Token:
@@ -114,6 +119,10 @@ class Corpora:
     self.documents.append(doc)
             
             
+  def shuffle(self):
+    random.shuffle(self.documents)
+
+
   def subset(self, start, end):
     s = Corpora()
     s.documents = self.documents[start:end]
@@ -654,6 +663,7 @@ class ParserState:
     self.elaborate = []
     self.actions = []
 
+
   def __repr__(self):
     s = "C:" + str(self.current) + " in [" + str(self.begin) + ", " + str(self.end) + ")"
     s += " " + str(len(self.frames)) + " frames"
@@ -661,11 +671,15 @@ class ParserState:
       if index == 10: break
       s += "\n   - Attn " + str(index) + ":" + str(f.type) + " Creation:" + str(f.creation)
       s += ", Focus:" + str(f.focus) + ", #Edges:" + str(len(f.edges))
-      s += " (" + str(len(f.spans)) + " spans)"
+      s += " (" + str(len(f.spans)) + " spans) "
       if len(f.spans) > 0:
         for span in f.spans:
-          s += " [" + str(span.start) + ", " + str(span.end) + ")"
+          words = self.document.tokens[span.start].word
+          if span.end > span.start + 1:
+            words += ".." + self.document.tokens[span.end - 1].word
+          s += words + " = [" + str(span.start) + ", " + str(span.end) + ") "
     return s
+
 
   def compute_role_graph(self):
     if len(self.spec.actions.roles) == 0: return
@@ -770,18 +784,18 @@ class ParserState:
     return self.graph
 
   
-  def add_to_attention(self, f):
+  def _add_to_attention(self, f):
     f.focus = self.steps
     self.attention.insert(0, f)
 
 
-  def refocus_attention(self, index):
+  def _refocus_attention(self, index):
     f = self.attention[index]
     f.focus = self.steps
     if index > 0: self.attention.insert(0, self.attention.pop(index))
 
 
-  def make_span(self, length):
+  def _make_span(self, length):
     # See if an existing span can be returned.
     if len(self.nesting) > 0:
       last = self.nesting[-1]
@@ -807,7 +821,7 @@ class ParserState:
       del self.embed[:]
       del self.elaborate[:]
     elif action.type == Action.EVOKE:
-      s = self.make_span(action.length)
+      s = self._make_span(action.length)
       f = ParserState.Frame(action.label)
       f.start = self.current
       f.end = self.current + action.length
@@ -815,26 +829,26 @@ class ParserState:
       f.spans.append(s)
       s.evoked.append(f)
       self.frames.append(f)
-      self.add_to_attention(f)
+      self._add_to_attention(f)
     elif action.type == Action.REFER:
       f = self.attention[action.target]
       f.focus = self.steps
-      s = self.make_span(action.length)
+      s = self._make_span(action.length)
       s.evoked.append(f)
       f.spans.append(s)
-      self.refocus_attention(action.target)
+      self._refocus_attention(action.target)
     elif action.type == Action.CONNECT:
       f = self.attention[action.source]
       f.edges.append((action.role, self.attention[action.target]))
       f.focus = self.steps
-      self.refocus_attention(action.source)
+      self._refocus_attention(action.source)
     elif action.type == Action.EMBED:
       target = self.attention[action.target]
       f = ParserState.Frame(action.label)
       f.creation = self.steps
       f.focus = self.steps
       f.edges.append((action.role, target))
-      self.add_to_attention(f)
+      self._add_to_attention(f)
       self.embed.append((action.label, action.role, target))
     elif action.type == Action.ELABORATE:
       source = self.attention[action.source]
@@ -842,13 +856,13 @@ class ParserState:
       f.creation = self.steps
       f.focus = self.steps
       source.edges.append((action.role, f))
-      self.add_to_attention(f)
+      self._add_to_attention(f)
       self.elaborate.append((action.label, action.role, source))
     elif action.type == Action.ASSIGN:
       source = self.attention[action.source]
       source.focus = self.steps
       source.edges.append((action.role, action.label))
-      self.refocus_attention(action.source)
+      self._refocus_attention(action.source)
     else:
       raise ValueError("Unknown action type: ", action.type)
 
@@ -947,9 +961,10 @@ class Sempar(nn.Module):
         Var(torch.randn(num_layers, batch_size, self.spec.lstm_hidden_dim)))
   
 
-  def _get_ff_output(self, lr_lstm_output, rl_lstm_output, ff_activations, state):
+  def _get_ff_output(self, lr_lstm_output, rl_lstm_output, ff_activations, state, debug=False):
     assert len(ff_activations) == state.steps
     ff_input_parts = []
+    ff_input_parts_debug = []
 
     role_graph = state.role_graph()
     num_roles = len(self.spec.actions.roles)
@@ -981,56 +996,78 @@ class Sempar(nn.Module):
         embedded_features = bag(
           Var(torch.LongTensor(raw_features)), Var(torch.LongTensor([0])))
       ff_input_parts.append(embedded_features)
+      if debug: ff_input_parts_debug.append((f, raw_features))
 
     for f, transform in zip(self.spec.ff_link_features, self.ff_link_transforms):
+      link_debug = (f, [])
       if f.name == "history":
         for i in xrange(f.num_links):
+          index = None
           if i < len(ff_activations):
-            activation = transform(ff_activations[-1 - i])
+            index = -1 - i
+            activation = transform(ff_activations[index])
           else:
             activation = Var(torch.zeros(1, f.dim))
           ff_input_parts.append(activation)
+          if debug: link_debug[1].append(index)
       elif f.name == "lr":
+        index = None
         if state.current < state.end:
-          activation = transform(lr_lstm_output[state.current - state.begin])
+          index = state.current - state.begin
+          activation = transform(lr_lstm_output[index])
         else:
           activation = Var(torch.zeros(1, f.dim))
         ff_input_parts.append(activation)
+        if debug: link_debug[1].append(index)
       elif f.name == "rl":
+        index = None
         if state.current < state.end:
-          activation = transform(rl_lstm_output[-1 - (state.current - state.begin)])
+          index = -1 - (state.current - state.begin)
+          activation = transform(rl_lstm_output[index])
         else:
           activation = Var(torch.zeros(1, f.dim))
         ff_input_parts.append(activation)
+        if debug: link_debug[1].append(index)
       elif f.name == "frame_end_lr":
         for i in xrange(f.num_links):
+          index = None
           end = state.frame_end_inclusive(i)
           if end != -1:
-            activation = transform(lr_lstm_output[end - state.begin])
+            index = end - state.begin
+            activation = transform(lr_lstm_output[index])
           else:
             activation = Var(torch.zeros(1, f.dim))
           ff_input_parts.append(activation)
+          if debug: link_debug[1].append(index)
       elif f.name == "frame_end_rl":
         for i in xrange(f.num_links):
+          index = None
           end = state.frame_end_inclusive(i)
           if end != -1:
+            index = -1 - (end - state.begin)
             activation = transform(rl_lstm_output[-1 - (end - state.begin)])
           else:
             activation = Var(torch.zeros(1, f.dim))
           ff_input_parts.append(activation)
+          if debug: link_debug[1].append(index)
       elif f.name == "frame_creation" or f.name == "frame_focus":
         for i in xrange(f.num_links):
           step = state.creation_step(i) if f.name == "frame_creation" else state.focus_step(i)
           if step != -1:
             activation = transform(ff_activations[step])
           else:
+            step = None
             activation = Var(torch.zeros(1, f.dim))
           ff_input_parts.append(activation)
+          if debug: link_debug[1].append(step)
+      else:
+        raise ValueError("Link feature not implemented:" + f.name)
+      if debug: ff_input_parts_debug.append(link_debug)
         
     ff_input = torch.cat(ff_input_parts, 1)
     ff_hidden = self.ff_relu(self.ff_layer(ff_input))
     ff_activations.append(ff_hidden)
-    return self.ff_softmax(ff_hidden).view(self.spec.num_actions)
+    return self.ff_softmax(ff_hidden).view(self.spec.num_actions), ff_input_parts_debug
 
 
   def _get_lstm_outputs(self, doc):
@@ -1074,7 +1111,7 @@ class Sempar(nn.Module):
         gold_index = actions.indices.get(gold_action, None)
         assert gold_index is not None, "Unknown gold action %r" % gold_action
 
-        ff_output = self._get_ff_output(lr_out, rl_out, ff_activations, state)
+        ff_output, _ = self._get_ff_output(lr_out, rl_out, ff_activations, state)
         loss += self.loss_fn(ff_output.view(1, -1), Var(torch.LongTensor([gold_index])))
 
         assert state.is_allowed(gold_index), "Disallowed gold action: %r" % gold_action
@@ -1086,7 +1123,7 @@ class Sempar(nn.Module):
       index = actions.shift()
       k = 50 if 50 < self.spec.num_actions else self.spec.num_actions
       while index != actions.stop():
-        ff_output = self._get_ff_output(lr_out, rl_out, ff_activations, state)
+        ff_output, _ = self._get_ff_output(lr_out, rl_out, ff_activations, state)
 
         # Find the highest scoring allowed action among the top-k.
         # If all top-k actions are disallowed, then use a fallback action.
@@ -1105,6 +1142,17 @@ class Sempar(nn.Module):
         print "Predicted", actions.table[index], "at rank ", rank
         state.advance(actions.table[index])
       return state
+
+
+  def lstm_features_debug(self, feature_spec, indices):
+    items = []
+    if feature_spec.name == "word":
+      items = [self.spec.words.value(index) for index in indices]
+    elif feature_spec.name == "suffix":
+      items = [self.spec.suffix.value(index) for index in indices]
+    else:
+      raise ValueError(feature_spec.name + " not implemented")
+    return str(items)
 
 
   def trace(self, doc):
@@ -1136,9 +1184,25 @@ class Sempar(nn.Module):
           end = None
           if state.current < state.end - 1:
             end = f.offsets[state.current - state.begin + 1]
-          print "  LSTM feature:", spec.name, ", indices=", f.indices[start:end]
+          print "  LSTM feature:", spec.name, ", indices=", f.indices[start:end], "values=", self.lstm_features_debug(spec, f.indices[start:end])
 
-      ff_output = self._get_ff_output(lr_out, rl_out, ff_activations, state)
+      ff_output, ff_debug = self._get_ff_output(lr_out, rl_out, ff_activations, state, debug=True)
+      roles = self.spec.actions.roles
+      nr = len(roles)
+      fl = self.spec.frame_limit
+      for f, indices in ff_debug:
+        values = indices
+        if f.name == "out_roles":
+          values = [str(i / nr) + "->" + str(roles[i % nr]) for i in indices]
+        elif f.name == "in_roles":
+          values = [str(roles[i % nr]) + "->" + str(i / nr) for i in indices]
+        elif f.name == "unlabeled_roles":
+          values = [str(i / fl) + "->" + str(i % fl) for i in indices]
+        elif f.name == "labeled_roles":
+          t = fl * nr
+          values = [str(i / t) + "->" + str(roles[(i % t) % nr]) + "->" + str((i % t) / nr) for i in indices]
+
+        print "  FF Feature", f.name, "=", str(indices), str(values)
       assert ff_output.view(1, -1).size(1) == self.spec.num_actions
 
       assert state.is_allowed(gold_index), "Disallowed gold action: %r" % gold_action
@@ -1148,21 +1212,54 @@ class Sempar(nn.Module):
       steps += 1
 
 
-def train(sempar, corpora):
-  optimizer = optim.Adam(sempar.parameters())
-  for epoch in xrange(2000):
-    optimizer.zero_grad()
-    loss = sempar.forward(corpora.documents[epoch % train.size()], train=True)
+def learn(sempar, corpora):
+  l2_coeff = 0.001
+  optimizer = optim.Adam(sempar.parameters(), weight_decay=l2_coeff)
+  optimizer.zero_grad()
+
+  num_epochs = 4000
+  batch_size = 4
+  current_batch_size = 0
+  batch_loss = Var(torch.FloatTensor([0.0]))
+
+  sample_doc = corpora.documents[1] if corpora.size() > 1 else corpora.documents[0]
+  corpora.shuffle()
+  for epoch in xrange(num_epochs):
+    if epoch % batch_size == 0:
+      if current_batch_size > 0:
+        batch_loss /= current_batch_size
+        print "Epoch", epoch, "BatchLoss", batch_loss.data[0], "BatchSize", current_batch_size
+        batch_loss.backward()
+        optimizer.step()
+
+      del batch_loss
+      current_batch_size = 0
+      batch_loss = Var(torch.FloatTensor([0.0]))
+      optimizer.zero_grad()
+
+    loss = sempar.forward(corpora.documents[epoch % corpora.size()], train=True)
+    batch_loss += loss
+    current_batch_size += 1
     print "Epoch", epoch, "Loss", loss.data[0]
-    loss.backward()
+    #norm = torch.FloatTensor([0.0])
+    #for p in sempar.parameters():
+    #  norm += torch.norm(p.data)
+    #print "Epoch", epoch, "Loss", loss.data[0], "Norm", norm[0], (loss[0] + l2_coeff * norm[0]).data[0]
+    #loss.backward()
+    #optimizer.step()
+
+  if current_batch_size > 0:
+    batch_loss /= current_batch_size
+    print "Epoch", epoch, "BatchLoss", batch_loss.data[0], "BatchSize", current_batch_size
+    batch_loss.backward()
     optimizer.step()
 
-  doc = corpora.documents[0]
-  for t in doc.tokens:
+  sample_doc
+  for t in sample_doc.tokens:
     print "Token", t.word
-  for g in doc.gold:
+  for g in sample_doc.gold:
     print "Gold", g
-  state = sempar.forward(doc, train=False)
+  state = sempar.forward(sample_doc, train=False)
   for a in state.actions:
     print "Predicted", a
 
@@ -1172,16 +1269,16 @@ def trial_run():
   commons.load("/home/grahul/sempar_ontonotes/commons.new")
   commons.freeze()
   train = Corpora()
-  with zipfile.ZipFile("/home/grahul/sempar_ontonotes/train.zip", "r") as trainzip:
-    for index, fname in enumerate(trainzip.namelist()):
-      doc = Document(commons, trainzip.read(fname))
-      if index <= 1000:
-        train.add(doc)
-        if index == 1000: break      
+
+  reader = sling.RecordReader("/home/grahul/sempar_ontonotes/train.srio")
+  for _, value in reader:
+    train.add(Document(commons, value))
+    if train.size() == 100: break
   print train.size(), "train docs read"
   spec = Spec()
   spec.build(commons, train)
   sempar = Sempar(spec)
-  sempar.trace(train.documents[1])
+  #sempar.trace(train.documents[1])
+  learn(sempar, train)
 
 trial_run()
