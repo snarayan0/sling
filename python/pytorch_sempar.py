@@ -4,6 +4,7 @@ import torch.autograd as autograd
 import torch.nn as nn
 import torch.optim as optim
 import sling
+from guppy import hpy
 
 Var = autograd.Variable
 torch.manual_seed(1)
@@ -62,54 +63,40 @@ class Lexicon:
     return self.index_to_item[index]
     
 
-class Token:
-  def __init__(self, word=None, breaklevel=None):
-    self.word = word
-    self.breaklevel = breaklevel
-    self.start = 0
-    self.length = 0
-    
+def mention_comparator(x, y):
+  b1 = x.begin
+  b2 = y.begin
+  if b1 < b2 or b1 == b2 and x.length > y.length:
+    return -1
+  if b1 > b2 or x.length < y.length:
+    return 1
+  return 0
 
-class Mention:
-  def __init__(self):
-    self.begin = None
-    self.length = None
-    self.evokes = []
-  
-  
+ 
 class Document:
-  def __init__(self, commons, encoded):
-    self.tokens = []
-    self.mentions = []
-    self.themes = []
-    self.gold = []
+  def __init__(self, commons, schema, encoded):
     self.store = sling.Store(commons)
     self.object = self.store.parse(encoded, binary=True)
-    tokens = self.object['/s/document/tokens']
-    for t in tokens:
-      token = Token()
-      token.word = t['/s/token/text']
-      token.start = t['/s/token/start']
-      token.length = t['/s/token/length']
-      token.breaklevel = t['/s/token/break']
-      self.tokens.append(token)
+    self.inner = sling.Document(frame=self.object, schema=schema)
+    self.gold = []
       
-    for mention in self.object('/s/document/mention'):      
-      m = Mention()
-      m.begin = mention['/s/phrase/begin']
-      m.length = mention['/s/phrase/length']
-      if m.length is None:
-        m.length = 1
-      m.evokes = [e for e in mention('/s/phrase/evokes')]
-      self.mentions.append(m)
-    
-    self.mentions.sort(cmp=lambda x, y: x.begin < y.begin or x.begin == y.begin and x.length >= y.length)
+    self.tokens = self.inner.tokens
+    self.mentions = self.inner.mentions
+    self.themes = self.inner.themes
+    self.inner.mentions.sort(cmp=mention_comparator)
 
 
 class Corpora:
   def __init__(self):
     self.documents = []
-    
+   
+
+  def read(self, filename, commons, schema, max_count=None):
+    reader = sling.RecordReader(filename)
+    for _, value in reader:
+      self.add(Document(commons, schema, value))
+      if max_count is not None and max_count <= len(self.documents): break
+    reader.close()
     
   def size(self):    
     return len(self.documents)
@@ -306,13 +293,10 @@ class TransitionGenerator:
   def generate(self, doc):
     frame_info = {}
     initialized = {}
-    mentions_with_frames = []
     for m in doc.mentions:
-      if len(m.evokes) > 0:
-        mentions_with_frames.append(m)
-        for evoked in m.evokes:
-          self.init_info(evoked, frame_info, initialized)
-          frame_info[evoked].mention = m
+      for evoked in m.evokes():
+        self.init_info(evoked, frame_info, initialized)
+        frame_info[evoked].mention = m
      
     for theme in doc.themes:
       self.init_info(theme, frame_info, initialized)
@@ -320,12 +304,12 @@ class TransitionGenerator:
     rough_actions = []
     start = 0
     evoked = {}
-    for m in mentions_with_frames:
+    for m in doc.mentions:
       for i in xrange(start, m.begin):
         rough_actions.append(RoughAction(Action.SHIFT))        
       start = m.begin
    
-      for frame in m.evokes:        
+      for frame in m.evokes():
         rough_action = RoughAction()
         rough_action.action.length = m.length
         rough_action.info = frame_info[frame]  
@@ -344,59 +328,60 @@ class TransitionGenerator:
     actions = []
     attention = []
     while len(rough_actions) > 0:
-      rough_action = rough_actions[-1]
-      rough_actions.pop()
+      rough_action = rough_actions.pop()
       actions.append(self._translate(attention, rough_action))
       self._update(attention, rough_action)
       t = rough_action.action.type
       if t == Action.EVOKE or t == Action.EMBED or t == Action.ELABORATE:
         rough_action.info.output = True
         for e in rough_action.info.edges:
-          if e.used:
-            continue
+          if e.used: continue
+
           nb_info = frame_info.get(e.neighbor, None)
-          if nb_info is None or not nb_info.output:
-            continue
-          rough_actions.append(RoughAction(Action.CONNECT))
-          rough_actions[-1].action.role = e.role
-          rough_actions[-1].info = nb_info if e.incoming else rough_action.info          
-          rough_actions[-1].other_info = rough_action.info if e.incoming else nb_info
+          if nb_info is None or not nb_info.output: continue
+
+          connect = RoughAction(Action.CONNECT)
+          connect.action.role = e.role
+          connect.info = nb_info if e.incoming else rough_action.info          
+          connect.other_info = rough_action.info if e.incoming else nb_info
+          rough_actions.append(connect)
           e.used = True
           e.inverse.used = True
            
         for e in rough_action.info.edges:
-          if e.used or not e.incoming:
-            continue
+          if e.used or not e.incoming: continue
+
           nb_info = frame_info.get(e.neighbor, None)
-          if nb_info is None or nb_info.output or nb_info.mention is not None:
-             continue            
-          rough_actions.append(RoughAction(Action.EMBED))
-          rough_actions[-1].action.role = e.role
-          rough_actions[-1].info = nb_info
-          rough_actions[-1].other_info = rough_action.info
+          if nb_info is None or nb_info.output or nb_info.mention is not None: continue            
+          embed = RoughAction(Action.EMBED)
+          embed.action.role = e.role
+          embed.info = nb_info
+          embed.other_info = rough_action.info
+          rough_actions.append(embed)
           e.used = True
           e.inverse.used = True
          
         for e in rough_action.info.edges:
-          if e.used or e.incoming:
-            continue
+          if e.used or e.incoming: continue
+
           nb_info = frame_info.get(e.neighbor, None)
-          if nb_info is None or nb_info.output or nb_info.mention is not None:
-            continue            
-          rough_actions.append(RoughAction(Action.ELABORATE))
-          rough_actions[-1].action.role = e.role
-          rough_actions[-1].info = nb_info
-          rough_actions[-1].other_info = rough_action.info
+          if nb_info is None or nb_info.output or nb_info.mention is not None: continue            
+          elaborate = RoughAction(Action.ELABORATE)
+          elaborate.action.role = e.role
+          elaborate.info = nb_info
+          elaborate.other_info = rough_action.info
+          rough_actions.append(elaborate)
           e.used = True
           e.inverse.used = True
          
         for e in rough_action.info.edges:
-          if e.used or e.neighbor.islocal() or e.incoming:
-            continue
-          rough_actions.append(RoughAction(Action.ASSIGN))
-          rough_actions[-1].info = rough_action.info
-          rough_actions[-1].action.role = e.role
-          rough_actions[-1].action.label = e.neighbor
+          if e.used or e.neighbor.islocal() or e.incoming: continue
+
+          assign = RoughAction(Action.ASSIGN)
+          assign.info = rough_action.info
+          assign.action.role = e.role
+          assign.action.label = e.neighbor
+          rough_actions.append(assign)
           e.used = True          
          
     return actions
@@ -499,9 +484,7 @@ class Actions:
       self.max_connect_source, self.max_connect_target,
       self.max_refer_target, self.max_embed_target,
       self.max_elaborate_source])
-
   
-
 
 class Spec:
   def __init__(self):
@@ -558,7 +541,7 @@ class Spec:
     self.suffix = Lexicon(self.suffixes_min_count, self.suffixes_normalize_digits)
     for doc in corpora.documents:
       for token in doc.tokens:
-        word = token.word
+        word = token.text
         self.words.add(word)
         for s in self.get_suffixes(word):
           self.suffix.add(s)
@@ -674,9 +657,9 @@ class ParserState:
       s += " (" + str(len(f.spans)) + " spans) "
       if len(f.spans) > 0:
         for span in f.spans:
-          words = self.document.tokens[span.start].word
+          words = self.document.tokens[span.start].text
           if span.end > span.start + 1:
-            words += ".." + self.document.tokens[span.end - 1].word
+            words += ".." + self.document.tokens[span.end - 1].text
           s += words + " = [" + str(span.start) + ", " + str(span.end) + ") "
     return s
 
@@ -933,11 +916,11 @@ class Sempar(nn.Module):
       if f.name == "word":
         for token in document.tokens:
           features.new_offset()
-          features.add(self.spec.words.index(token.word))
+          features.add(self.spec.words.index(token.text))
       elif f.name == "suffix":
         for token in document.tokens:
           features.new_offset()
-          for s in self.spec.get_suffixes(token.word):
+          for s in self.spec.get_suffixes(token.text):
             features.add(self.spec.suffix.index(s))
       else:
         raise ValueError("LSTM feature '", f.name, "' not implemented")
@@ -1165,7 +1148,7 @@ class Sempar(nn.Module):
 
     print length, "tokens in document"
     for index, t in enumerate(doc.tokens):
-      print "Token", index, "=", t.word
+      print "Token", index, "=", t.text
     print
 
     state = ParserState(doc, self.spec)
@@ -1178,7 +1161,7 @@ class Sempar(nn.Module):
       assert gold_index is not None, "Unknown gold action %r" % gold_action
 
       if state.current < state.end:
-        print "Now at token", state.current, "=", doc.tokens[state.current].word
+        print "Now at token", state.current, "=", doc.tokens[state.current].text
         for spec, f in zip(self.spec.lstm_features, lstm_features):
           start = f.offsets[state.current - state.begin]
           end = None
@@ -1212,13 +1195,14 @@ class Sempar(nn.Module):
       steps += 1
 
 
-def learn(sempar, corpora):
-  l2_coeff = 0.001
+def learn(sempar, corpora, dev):
+  l2_coeff = 0.000
   optimizer = optim.Adam(sempar.parameters(), weight_decay=l2_coeff)
   optimizer.zero_grad()
 
-  num_epochs = 4000
-  batch_size = 4
+  num_epochs = 800000
+  batch_size = 1
+	report_every = 100
   current_batch_size = 0
   batch_loss = Var(torch.FloatTensor([0.0]))
 
@@ -1240,7 +1224,8 @@ def learn(sempar, corpora):
     loss = sempar.forward(corpora.documents[epoch % corpora.size()], train=True)
     batch_loss += loss
     current_batch_size += 1
-    print "Epoch", epoch, "Loss", loss.data[0]
+    if batch_size > 1: print "Epoch", epoch, "Loss", loss.data[0]
+
     #norm = torch.FloatTensor([0.0])
     #for p in sempar.parameters():
     #  norm += torch.norm(p.data)
@@ -1256,7 +1241,7 @@ def learn(sempar, corpora):
 
   sample_doc
   for t in sample_doc.tokens:
-    print "Token", t.word
+    print "Token", t.text
   for g in sample_doc.gold:
     print "Gold", g
   state = sempar.forward(sample_doc, train=False)
@@ -1264,21 +1249,25 @@ def learn(sempar, corpora):
     print "Predicted", a
 
 
+#@profile
 def trial_run():
   commons = sling.Store()
   commons.load("/home/grahul/sempar_ontonotes/commons.new")
   commons.freeze()
-  train = Corpora()
+  schema = sling.DocumentSchema(commons)
 
-  reader = sling.RecordReader("/home/grahul/sempar_ontonotes/train.srio")
-  for _, value in reader:
-    train.add(Document(commons, value))
-    if train.size() == 100: break
+  train = Corpora()
+  train.read("/home/grahul/sempar_ontonotes/train.rec", commons, schema, max_count=None)
   print train.size(), "train docs read"
+
+  #heap = hpy()
+  #print heap.heap()
   spec = Spec()
   spec.build(commons, train)
   sempar = Sempar(spec)
+  #print heap.heap()
   #sempar.trace(train.documents[1])
   learn(sempar, train)
+  #print heap.heap()
 
 trial_run()
