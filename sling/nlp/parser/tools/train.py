@@ -92,7 +92,7 @@ def write_corpus(filename, prefix, data):
         entry = prefix + str(i)
         z.writestr(entry, data[i])
     z.close()
-  
+
     with gfile.GFile(filename, 'w') as f:
       f.write(buf.getvalue())
 

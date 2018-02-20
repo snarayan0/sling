@@ -14,7 +14,7 @@
 
 
 import random
-
+import sling
 
 # Class for computing and serving a lexicon.
 # Usage:
@@ -94,16 +94,24 @@ class Document:
     self.store = sling.Store(commons)
     self.object = self.store.parse(encoded, binary=True)
     self.inner = sling.Document(frame=self.object, schema=schema)
+    self.inner.mentions.sort(cmp=mention_comparator)
     self.gold = []  # sequence of gold transitions
 
-    self.tokens = self.inner.tokens
-    self.mentions = self.inner.mentions
-    self.themes = self.inner.themes
-    self.inner.mentions.sort(cmp=mention_comparator)
+
+  def mentions(self):
+    return self.inner.mentions
+
+
+  def themes(self):
+    return self.inner.themes
+
+
+  def tokens(self):
+    return self.inner.tokens
 
 
   def size(self):
-    return len(self.tokens)
+    return len(self.tokens())
 
 
 # A set of documents.
@@ -251,18 +259,18 @@ class TransitionGenerator:
 
     info = frame_info.get(frame, None)
     if info is None:
-      info = FrameInfo(frame)
+      info = TransitionGenerator.FrameInfo(frame)
       frame_info[frame] = info
 
     pending = []
     for role, value in frame:
-      if not self.is_ref(value) or role == self._id
+      if not self.is_ref(value) or role == self._id \
         or (role == self._isa and value.islocal()):
         continue
       if role == self._isa and info.type is None:
         info.type = value
       else:
-        edge = Edge(incoming=False, role=role, value=value)
+        edge = TransitionGenerator.Edge(incoming=False, role=role, value=value)
         info.edges.append(edge)
         if value == frame:
           edge.inverse = edge
@@ -271,9 +279,10 @@ class TransitionGenerator:
         if value.islocal():
           nb_info = frame_info.get(value, None)
           if nb_info is None:
-            nb_info = FrameInfo(value)
+            nb_info = TransitionGenerator.FrameInfo(value)
             frame_info[value] = nb_info
-          nb_edge = Edge(incoming=True, role=role, value=frame)
+          nb_edge = TransitionGenerator.Edge(
+              incoming=True, role=role, value=frame)
           nb_info.edges.append(nb_edge)
           nb_edge.inverse = edge
           edge.inverse = nb_edge
@@ -322,28 +331,30 @@ class TransitionGenerator:
       attention.remove(rough.info.handle)
       attention.insert(0, rough.info.handle)
 
+  def _rough_action(self, type=None):
+    return TransitionGenerator.RoughAction(type)
 
   def generate(self, document):
     frame_info = {}
     initialized = {}
-    for m in document.mentions:
+    for m in document.mentions():
       for evoked in m.evokes():
-        self.init_info(evoked, frame_info, initialized)
+        self._init_info(evoked, frame_info, initialized)
         frame_info[evoked].mention = m
 
-    for theme in document.themes:
-      self.init_info(theme, frame_info, initialized)
+    for theme in document.themes():
+      self._init_info(theme, frame_info, initialized)
 
     rough_actions = []
     start = 0
     evoked = {}
-    for m in document.mentions:
+    for m in document.mentions():
       for i in xrange(start, m.begin):
-        rough_actions.append(RoughAction(Action.SHIFT))
+        rough_actions.append(self._rough_action(Action.SHIFT))
       start = m.begin
 
       for frame in m.evokes():
-        rough_action = RoughAction()
+        rough_action = self._rough_action()
         rough_action.action.length = m.length
         rough_action.info = frame_info[frame]
         if frame not in evoked:
@@ -353,10 +364,10 @@ class TransitionGenerator:
           rough_action.action.type = Action.REFER
         rough_actions.append(rough_action)
 
-    for index in xrange(start, len(document.tokens)):
-      rough_actions.append(RoughAction(Action.SHIFT))
+    for index in xrange(start, document.size()):
+      rough_actions.append(self._rough_action(Action.SHIFT))
 
-    rough_actions.append(RoughAction(Action.STOP))
+    rough_actions.append(self._rough_action(Action.STOP))
     rough_actions.reverse()
     actions = []
     attention = []
@@ -374,7 +385,7 @@ class TransitionGenerator:
 
           nb = frame_info.get(e.neighbor, None)
           if nb is not None and nb.output:
-            connect = RoughAction(Action.CONNECT)
+            connect = self._rough_action(Action.CONNECT)
             connect.action.role = e.role
             connect.info = nb if e.incoming else rough_action.info
             connect.other_info = rough_action.info if e.incoming else nb
@@ -388,7 +399,7 @@ class TransitionGenerator:
 
           nb = frame_info.get(e.neighbor, None)
           if nb is not None and not nb.output and nb.mention is None:
-            embed = RoughAction(Action.EMBED)
+            embed = self._rough_action(Action.EMBED)
             embed.action.role = e.role
             embed.info = nb
             embed.other_info = rough_action.info
@@ -402,7 +413,7 @@ class TransitionGenerator:
 
           nb = frame_info.get(e.neighbor, None)
           if nb is not None and not nb.output and nb.mention is None:
-            elaborate = RoughAction(Action.ELABORATE)
+            elaborate = self._rough_action(Action.ELABORATE)
             elaborate.action.role = e.role
             elaborate.info = nb
             elaborate.other_info = rough_action.info
@@ -413,7 +424,7 @@ class TransitionGenerator:
         # ASSIGN actions for the newly output frame.
         for e in rough_action.info.edges:
           if not e.used and not e.neighbor.islocal() and not e.incoming:
-            assign = RoughAction(Action.ASSIGN)
+            assign = self._rough_action(Action.ASSIGN)
             assign.info = rough_action.info
             assign.action.role = e.role
             assign.action.label = e.neighbor
@@ -604,11 +615,11 @@ class Spec:
     return output
 
 
-  def ff_fixed(self, features, name, dim, vocab):
+  def add_ff_fixed(self, name, dim, vocab):
     self.ff_fixed_features.append(FeatureSpec(name, dim=dim, vocab=vocab))
 
 
-  def ff_link(self, features, name, dim, activation, num_links):
+  def add_ff_link(self, name, dim, activation, num_links):
     self.ff_link_features.append(
         FeatureSpec(name, dim=dim, activation=activation, num_links=num_links))
 
@@ -618,11 +629,11 @@ class Spec:
     # Prepare lexical dictionaries.
     self.commons = commons
     self.words = Lexicon(self.words_min_count, self.words_normalize_digits)
-    self.suffix =
-      Lexicon(self.suffixes_min_count, self.suffixes_normalize_digits)
+    self.suffix = Lexicon(
+        self.suffixes_min_count, self.suffixes_normalize_digits)
 
     for document in corpora.documents:
-      for token in document.tokens:
+      for token in document.tokens():
         word = token.text
         self.words.add(word)
         for s in self.get_suffixes(word):
@@ -648,22 +659,22 @@ class Spec:
     self.ff_link_features = []
     fl = self.frame_limit
     if num_roles > 0:
-      self.ff_fixed("in_roles", self.roles_dim, num_roles * fl)
-      self.ff_fixed("out_roles", self.roles_dim, num_roles * fl)
-      self.ff_fixed("unlabeled_roles", self.roles_dim, fl * fl)
-      self.ff_fixed("labeled_roles", self.roles_dim, num_roles * fl * fl)
+      self.add_ff_fixed("in_roles", self.roles_dim, num_roles * fl)
+      self.add_ff_fixed("out_roles", self.roles_dim, num_roles * fl)
+      self.add_ff_fixed("unlabeled_roles", self.roles_dim, fl * fl)
+      self.add_ff_fixed("labeled_roles", self.roles_dim, num_roles * fl * fl)
 
-    self.ff_link("frame_creation", 64, self.ff_hidden_dim, fl))
-    self.ff_link("frame_focus", 64, self.ff_hidden_dim, fl))
-    self.ff_link("frame_end_lr", 64, self.lstm_hidden_dim, fl))
-    self.ff_link("frame_end_rl", 64, self.lstm_hidden_dim, fl))
-    self.ff_link("lr", 32, self.lstm_hidden_dim, 1))
-    self.ff_link("rl", 32, self.lstm_hidden_dim, 1))
-    self.ff_link("history", 64, self.ff_hidden_dim, self.history_limit))
+    self.add_ff_link("frame_creation", 64, self.ff_hidden_dim, fl)
+    self.add_ff_link("frame_focus", 64, self.ff_hidden_dim, fl)
+    self.add_ff_link("frame_end_lr", 64, self.lstm_hidden_dim, fl)
+    self.add_ff_link("frame_end_rl", 64, self.lstm_hidden_dim, fl)
+    self.add_ff_link("lr", 32, self.lstm_hidden_dim, 1)
+    self.add_ff_link("rl", 32, self.lstm_hidden_dim, 1)
+    self.add_ff_link("history", 64, self.ff_hidden_dim, self.history_limit)
 
     self.ff_input_dim = sum([f.dim for f in self.ff_fixed_features])
-    self.ff_input_dim +=
-        sum([f.dim * f.num_links for f in self.ff_link_features])
+    self.ff_input_dim += sum(
+        [f.dim * f.num_links for f in self.ff_link_features])
     print "FF input dim", self.ff_input_dim
     assert self.ff_input_dim > 0
 
@@ -682,11 +693,11 @@ class Spec:
       features = Feature()
       output.append(features)
       if f.name == "word":
-        for token in document.tokens:
+        for token in document.tokens():
           features.new_offset()
           features.add(self.words.index(token.text))
       elif f.name == "suffix":
-        for token in document.tokens:
+        for token in document.tokens():
           features.new_offset()
           for s in self.get_suffixes(token.text):
             features.add(self.suffix.index(s))
@@ -724,12 +735,12 @@ class Spec:
 
   def translated_ff_link_features(self, feature_spec, state):
     name = feature_spec.name
-    num = features_spec.num_links
+    num = feature_spec.num_links
 
     output = []
     if name == "history":
       for i in xrange(num):
-        output.append(None if i < state.steps else -1 - i)
+        output.append(None if i >= state.steps else -1 - i)
     elif name == "lr":
       index = None
       if state.current < state.end:
@@ -826,7 +837,7 @@ class ParserState:
     self.spec = spec
     self.current = 0
     self.begin = 0
-    self.end = len(document.tokens)
+    self.end = len(document.tokens())
     self.frames = []
     self.spans = []
     self.steps = 0
@@ -841,19 +852,19 @@ class ParserState:
 
 
   def __repr__(self):
-    s = "Curr:" + str(self.current) + " in [" + str(self.begin) +
+    s = "Curr:" + str(self.current) + " in [" + str(self.begin) + \
         ", " + str(self.end) + ")" + " " + str(len(self.frames)) + " frames"
     for index, f in enumerate(self.attention):
       if index == 10: break
-      s += "\n   - Attn " + str(index) + ":" + str(f.type) +
-           " Creation:" + str(f.creation) +
-           ", Focus:" + str(f.focus) + ", #Edges:" + str(len(f.edges)) +
+      s += "\n   - Attn " + str(index) + ":" + str(f.type) + \
+           " Creation:" + str(f.creation) + \
+           ", Focus:" + str(f.focus) + ", #Edges:" + str(len(f.edges)) + \
            " (" + str(len(f.spans)) + " spans) "
       if len(f.spans) > 0:
         for span in f.spans:
-          words = self.document.tokens[span.start].text
+          words = self.document.tokens()[span.start].text
           if span.end > span.start + 1:
-            words += ".." + self.document.tokens[span.end - 1].text
+            words += ".." + self.document.tokens()[span.end - 1].text
           s += words + " = [" + str(span.start) + ", " + str(span.end) + ") "
     return s
 
@@ -965,27 +976,14 @@ class ParserState:
     return self.graph
 
 
+  def frame_end_inclusive(self, index):
+    if index >= len(self.attention) or index < 0:
+      return -1
+    else:
+      return self.attention[index].end - 1
   def _add_to_attention(self, f):
     f.focus = self.steps
     self.attention.insert(0, f)
-
-
-  def _refocus_attention(self, index):
-    f = self.attention[index]
-    f.focus = self.steps
-    if index > 0: self.attention.insert(0, self.attention.pop(index))
-
-
-  def _make_span(self, length):
-    # See if an existing span can be returned.
-    if len(self.nesting) > 0:
-      last = self.nesting[-1]
-      if last.start == self.current and last.end == self.current + length:
-        return last
-    s = ParserState.Span(self.current, length)
-    self.spans.append(s)
-    self.nesting.append(s)
-    return s
 
 
   def advance(self, action):
@@ -1052,11 +1050,87 @@ class ParserState:
       self.compute_role_graph()
 
 
-  def frame_end_inclusive(self, index):
-    if index >= len(self.attention) or index < 0:
-      return -1
-    else:
-      return self.attention[index].end - 1
+  def write(self, document=None):
+    if document is None:
+      document = self.document.inner
 
+    assert type(document) is sling.Document
+
+    store = document.frame.store()
+    document.remove_annotations()
+    frames = {}
+
+    for f in self.frames:
+      frame = store.frame({"isa": f.type})
+      frames[f] = frame
+      if len(f.spans) == 0:
+        document.add_theme(frame)
+
+    for f in self.frames:
+      frame = frames[f]
+      for role, value in f.edges:
+        assert value in frames
+        frame.append(role, frames[value])
+
+    for s in self.spans:
+      # Note: mention.frame is the actual mention frame.
+      mention = document.add_mention(s.start, s.end)
+      for f in s.evoked:
+        assert f in frames
+        mention.frame.append("/s/phrase/evokes", frames[f])
+
+    document.update()
+
+
+  def _refocus_attention(self, index):
+    f = self.attention[index]
+    f.focus = self.steps
+    if index > 0: self.attention.insert(0, self.attention.pop(index))
+
+
+  def _make_span(self, length):
+    # See if an existing span can be returned.
+    if len(self.nesting) > 0:
+      last = self.nesting[-1]
+      if last.start == self.current and last.end == self.current + length:
+        return last
+    s = ParserState.Span(self.current, length)
+    self.spans.append(s)
+    self.nesting.append(s)
+    return s
+
+
+def frame_evaluation(gold_corpus_path, test_corpus, commons_path, tmp_folder):
+  test_file_name = os.path.join(tmp_folder, "test.rec")
+  writer = sling.RecordWriter(test_file_name)
+  for index, document in enumerate(test_corpus.documents):
+    data = document.frame.data(binary=True, shallow=True)
+    name = "test." + str(index)
+    writer.write(name, data)
+  writer.close()
+
+  try:
+    output = subprocess.check_output(
+        ['bazel-bin/sling/nlp/parser/tools/evaluate-frames',
+         '--gold_documents=' + gold_corpus_path,
+         '--test_documents=' + test_file_name,
+         '--commons=' + commons_path],
+        stderr=subprocess.STDOUT)
+  except subprocess.CalledProcessError as e:
+    print("Evaluation failed: ", e.returncode, e.output)
+    return {'eval_metric': 0.0}
+
+  eval_output = {}
+  for line in output.splitlines():
+    line = line.rstrip()
+    print "Evaluation Metric: ", line
+    parts = line.split('\t')
+    assert len(parts) == 2, "%r" % line
+    eval_output[parts[0]] = float(parts[1])
+    if line.startswith("SLOT_F1"):
+      eval_output['eval_metric'] = float(parts[1])
+
+  assert eval_output.has_key('eval_metric'), "%r" % str(eval_output)
+  return eval_output
 
 

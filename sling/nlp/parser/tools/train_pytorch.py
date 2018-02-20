@@ -12,7 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
+import random
 import sling
+import subprocess
 import sys
 import torch
 import torch.autograd as autograd
@@ -21,10 +24,12 @@ import torch.optim as optim
 
 sys.path.insert(0, "sling/nlp/parser/trainer")
 
-import train_util
+import train_util as training
 
 Var = autograd.Variable
+
 torch.manual_seed(1)
+random.seed(0x31337)
 
 class Sempar(nn.Module):
   def __init__(self, spec):
@@ -39,11 +44,11 @@ class Sempar(nn.Module):
     self.lr_embeddings = []
     self.rl_embeddings = []
     for f in spec.lstm_features:
-      embedding = nn.EmbeddingBag(f.vocab_size, f.dim, mode='sum'))
+      embedding = nn.EmbeddingBag(f.vocab_size, f.dim, mode='sum')
       self.add_module('lr_lstm_embedding_' + f.name, embedding)
       self.lr_embeddings.append(embedding)
 
-      embedding = nn.EmbeddingBag(f.vocab_size, f.dim, mode='sum'))
+      embedding = nn.EmbeddingBag(f.vocab_size, f.dim, mode='sum')
       self.add_module('rl_lstm_embedding_' + f.name, embedding)
       self.rl_embeddings.append(embedding)
 
@@ -102,7 +107,7 @@ class Sempar(nn.Module):
 
     # Fixed features.
     for f, bag in zip(self.spec.ff_fixed_features, self.ff_fixed_embeddings):
-      raw_features = self.spec.raw_ff_fixed_Features(f, state)
+      raw_features = self.spec.raw_ff_fixed_features(f, state)
 
       embedded_features = None
       if len(raw_features) == 0:
@@ -129,6 +134,7 @@ class Sempar(nn.Module):
 
       for index in indices:
         if index is not None:
+          assert len(activations) > index, "%r" % index
           ff_input_parts.append(transform(activations[index]))
         else:
           ff_input_parts.append(Var(torch.zeros(1, f.dim)))
@@ -146,7 +152,7 @@ class Sempar(nn.Module):
 
   def _lstm_outputs(self, document):
     raw_features = self.spec.raw_lstm_features(document)
-    length = len(document.tokens)
+    length = document.size()
 
     # Each of {lr,rl}_lstm_inputs should have shape (length, lstm_input_dim).
     lr_lstm_inputs = self._embedding_lookup(self.lr_embeddings, raw_features)
@@ -170,18 +176,22 @@ class Sempar(nn.Module):
     return (lr_out, rl_out, raw_features)
 
 
-  def forward(self, document, train=False, debug=False):
+  def forward(self, document, train=False, debug=False, log=False):
     # Compute LSTM outputs.
     lr_out, rl_out, _ = self._lstm_outputs(document)
 
     # Run FF unit.
-    state = ParserState(document, self.spec)
+    state = training.ParserState(document, self.spec)
     actions = self.spec.actions
     ff_activations = []
 
     if train:
       loss = Var(torch.FloatTensor([1]).zero_())
+      if log:
+        print len(document.gold), "gold actions in document"
       for gold in document.gold:
+        if log:
+          print "Gold action", gold
         gold_index = actions.indices.get(gold, None)
         assert gold_index is not None, "Unknown gold action %r" % gold
 
@@ -194,7 +204,7 @@ class Sempar(nn.Module):
       loss = loss / len(document.gold)
       return loss
     else:
-      if len(document.tokens) == 0: return state
+      if document.size() == 0: return state
 
       topk = 50 if 50 < self.spec.num_actions else self.spec.num_actions
       shift = actions.shift()
@@ -227,7 +237,7 @@ class Sempar(nn.Module):
 
 
   def trace(self, document):
-    length = len(document.tokens)
+    length = document.size()
     lr_out, rl_out, lstm_features = self._lstm_outputs(document)
 
     assert len(self.spec.lstm_features) == len(lstm_features)
@@ -235,11 +245,11 @@ class Sempar(nn.Module):
       assert len(f.offsets) == length
 
     print length, "tokens in document"
-    for index, t in enumerate(document.tokens):
+    for index, t in enumerate(document.tokens()):
       print "Token", index, "=", t.text
     print
 
-    state = ParserState(document, self.spec)
+    state = training.ParserState(document, self.spec)
     actions = self.spec.actions
     ff_activations = []
     steps = 0
@@ -249,7 +259,7 @@ class Sempar(nn.Module):
       assert gold_index is not None, "Unknown gold action %r" % gold
 
       if state.current < state.end:
-        print "Token:", state.current, "=", document.tokens[state.current].text
+        print "Token", state.current, "=", document.tokens()[state.current].text
         for feature_spec, values in zip(self.spec.lstm_features, lstm_features):
           # Recall that 'values' has indices at all sequence positions.
           # We need to get the slice of feature indices at the current token.
@@ -259,7 +269,7 @@ class Sempar(nn.Module):
             end = values.offsets[state.current - state.begin + 1]
 
           current = values.indices[start:end]
-          print "  LSTM feature:", feature_spec.name, ", indices=", current,
+          print "  LSTM feature:", feature_spec.name, ", indices=", current,\
               "=", self.spec.lstm_feature_strings(current)
 
       ff_output, ff_debug = self._ff_output(
@@ -276,7 +286,18 @@ class Sempar(nn.Module):
       steps += 1
 
 
-def learn(sempar, corpora, dev, illustrate=False):
+def dev_loss(sempar, dev):
+  loss = 0
+  for document in dev.documents:
+    item_loss = sempar.forward(document, train=True, log=False)
+    loss += item_loss.data[0]
+  return loss / dev.size()
+
+
+def dev_accuracy(sempar, dev, commons_path, out_folder):
+  return
+
+def learn(sempar, corpora, dev_path=None, commons_path=None, illustrate=False):
   # Pick a reasonably long sample document.
   sample_doc = corpora.documents[0]
   for d in corpora.documents:
@@ -284,11 +305,15 @@ def learn(sempar, corpora, dev, illustrate=False):
       sample_doc = d
       break
 
-  num_epochs = 100
+  num_epochs = 200
   l2_coeff = 0.0001
-  batch_size = 1
-  report_every = 100
-  optimizer = optim.Adam(sempar.parameters(), weight_decay=l2_coeff)
+  batch_size = 2
+  report_every = 500
+  gradient_clip = 1.0
+  optimizer = optim.Adam(
+      sempar.parameters(), weight_decay=l2_coeff, \
+      betas=(0.01, 0.999), eps=1e-5)
+  #optimizer = optim.Adam(sempar.parameters(), weight_decay=l2_coeff)
 
   current_batch_size = 0
   batch_loss = Var(torch.FloatTensor([0.0]))
@@ -301,6 +326,8 @@ def learn(sempar, corpora, dev, illustrate=False):
         batch_loss /= current_batch_size
         print "Epoch", epoch, "BatchLoss", batch_loss.data[0]
         batch_loss.backward()
+        if gradient_clip is not None:
+          torch.nn.utils.clip_grad_norm(sempar.parameters(), gradient_clip)
         optimizer.step()
 
       del batch_loss
@@ -311,25 +338,37 @@ def learn(sempar, corpora, dev, illustrate=False):
     loss = sempar.forward(corpora.documents[epoch % corpora.size()], train=True)
     batch_loss += loss
     current_batch_size += 1
-    if batch_size > 1: print "  Epoch", epoch, "BatchItemLoss", loss.data[0]
+    #if batch_size > 1: print "  Epoch", epoch, "BatchItemLoss", loss.data[0]
+
+    if (epoch + 1) % report_every == 0 and dev_path is not None:
+      print "Dev loss at", epoch, ":", \
+          dev_accuracy(sempar, dev_path, commons_path)
+
 
   # Process the partial batch (if any) at the end.
   if current_batch_size > 0:
     batch_loss /= current_batch_size
     print "Epoch", epoch, "BatchLoss", batch_loss.data[0]
     batch_loss.backward()
+    if gradient_clip is not None:
+      torch.nn.utils.clip_grad_norm(sempar.parameters(), gradient_clip)
     optimizer.step()
+
+    #if dev_path is not None:
+    #  print "Dev loss at", epoch, ":", dev_loss(sempar, dev)
 
   # See how the sample document performs on the trained model.
   if illustrate:
     print "Sample Document:"
-    for t in sample_doc.tokens:
+    for t in sample_doc.tokens():
       print "Token", t.text
     for g in sample_doc.gold:
       print "Gold", g
     state = sempar.forward(sample_doc, train=False)
+    state.write()
     for a in state.actions:
       print "Predicted", a
+    print sample_doc.inner.frame.data(binary=False, shallow=True, pretty=True)
 
 
 def trial_run():
@@ -339,13 +378,18 @@ def trial_run():
   commons.freeze()
   schema = sling.DocumentSchema(commons)
 
-  train = Corpora()
-  train.read(path + "train.rec", commons, schema, max_count=5)
-  print train.size(), "train documents read"
+  train = training.Corpora()
+  train.read(path + "train.rec", commons, schema, max_count=2)
 
-  spec = Spec()
+  spec = training.Spec()
   spec.build(commons, train)
+
+  #train.shuffle()
+  #dev = train.subset(0, 1)
+  #train = train.subset(0, 10000)
+  print train.size(), "train documents read"
+  #print dev.size(), "dev documents read"
   sempar = Sempar(spec)
-  learn(sempar, train, illustrate=True)
+  learn(sempar, train, dev_path=None, illustrate=True)
 
 trial_run()
