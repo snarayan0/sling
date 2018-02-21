@@ -15,6 +15,7 @@
 
 import random
 import sling
+import subprocess
 
 # Class for computing and serving a lexicon.
 # Usage:
@@ -779,6 +780,10 @@ class Spec:
     return output
 
 
+  # Debugging methods.
+  #
+  # Returns feature strings for LSTM feature indices in 'indices'. All indices
+  # are assumed to belong to a single feature whose spec is in 'feature_spec'.
   def lstm_feature_strings(self, feature_spec, indices):
     strings = []
     if feature_spec.name == "word":
@@ -811,6 +816,21 @@ class Spec:
     else:
       raise ValueError(feature_spec.name + " not implemented")
     return str(strings)
+
+
+  def oracle_trace(self, document):
+    assert len(document.gold) > 0, "No gold actions"
+    state = ParserState(document, self)
+    for gold in document.gold:
+      print "Taking gold action", gold
+      print "On state:", state
+
+      gold_index = self.actions.indices.get(gold, None)
+      assert gold_index is not None, "Unknown gold action: %r" % gold
+      assert state.is_allowed(gold_index), "Disallowed gold action: %r" % gold
+      state.advance(gold)
+
+    print "Final state after", len(document.gold), "actions:", state
 
 
 class ParserState:
@@ -1082,6 +1102,18 @@ class ParserState:
     document.update()
 
 
+  def data(self, **kwargs):
+    return self.document.inner.frame.data(**kwargs)
+
+
+  def encoded(self):
+    return self.data(binary=True, shallow=True)
+
+
+  def textual(self):
+    return self.data(binary=False, pretty=True, shallow=True)
+
+
   def _refocus_attention(self, index):
     f = self.attention[index]
     f.focus = self.steps
@@ -1100,20 +1132,12 @@ class ParserState:
     return s
 
 
-def frame_evaluation(gold_corpus_path, test_corpus, commons_path, tmp_folder):
-  test_file_name = os.path.join(tmp_folder, "test.rec")
-  writer = sling.RecordWriter(test_file_name)
-  for index, document in enumerate(test_corpus.documents):
-    data = document.frame.data(binary=True, shallow=True)
-    name = "test." + str(index)
-    writer.write(name, data)
-  writer.close()
-
+def frame_evaluation(gold_corpus_path, test_corpus_path, commons_path):
   try:
     output = subprocess.check_output(
         ['bazel-bin/sling/nlp/parser/tools/evaluate-frames',
          '--gold_documents=' + gold_corpus_path,
-         '--test_documents=' + test_file_name,
+         '--test_documents=' + test_corpus_path,
          '--commons=' + commons_path],
         stderr=subprocess.STDOUT)
   except subprocess.CalledProcessError as e:

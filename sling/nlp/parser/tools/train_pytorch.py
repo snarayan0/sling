@@ -14,8 +14,8 @@
 
 import os
 import random
+import psutil
 import sling
-import subprocess
 import sys
 import torch
 import torch.autograd as autograd
@@ -25,6 +25,9 @@ import torch.optim as optim
 sys.path.insert(0, "sling/nlp/parser/trainer")
 
 import train_util as training
+
+from datetime import datetime
+from functools import partial
 
 Var = autograd.Variable
 
@@ -176,7 +179,7 @@ class Sempar(nn.Module):
     return (lr_out, rl_out, raw_features)
 
 
-  def forward(self, document, train=False, debug=False, log=False):
+  def forward(self, document, train=False, debug=False):
     # Compute LSTM outputs.
     lr_out, rl_out, _ = self._lstm_outputs(document)
 
@@ -187,11 +190,7 @@ class Sempar(nn.Module):
 
     if train:
       loss = Var(torch.FloatTensor([1]).zero_())
-      if log:
-        print len(document.gold), "gold actions in document"
       for gold in document.gold:
-        if log:
-          print "Gold action", gold
         gold_index = actions.indices.get(gold, None)
         assert gold_index is not None, "Unknown gold action %r" % gold
 
@@ -236,7 +235,7 @@ class Sempar(nn.Module):
       return state
 
 
-  def trace(self, document):
+  def model_trace(self, document):
     length = document.size()
     lr_out, rl_out, lstm_features = self._lstm_outputs(document)
 
@@ -286,18 +285,98 @@ class Sempar(nn.Module):
       steps += 1
 
 
-def dev_loss(sempar, dev):
-  loss = 0
-  for document in dev.documents:
-    item_loss = sempar.forward(document, train=True, log=False)
-    loss += item_loss.data[0]
-  return loss / dev.size()
+def now():
+  return "[" + str(datetime.now()) + "]"
 
 
-def dev_accuracy(sempar, dev, commons_path, out_folder):
-  return
+def mem():
+  p = psutil.Process(os.getpid())
+  return str(p.get_memory_info())
 
-def learn(sempar, corpora, dev_path=None, commons_path=None, illustrate=False):
+
+def dev_accuracy(commons_path, commons, dev_path, schema, tmp_folder, sempar):
+  dev = training.Corpora()
+  dev.read(dev_path, commons, schema, max_count=None)
+  print "Annotating", dev.size(), "documents", now(), mem()
+  test_path = os.path.join(tmp_folder, "test.eval.rec")
+  writer = sling.RecordWriter(test_path)
+  for index, document in enumerate(dev.documents):
+    state = sempar.forward(document, train=False)
+    state.write()
+    writer.write(str(index), state.encoded())
+    if (index + 1) % 50 == 0:
+      print "  Annotated", (index + 1), "documents", now(), mem()
+  writer.close()
+  print "Annotated", dev.size(), "documents", now(), mem()
+
+  return training.frame_evaluation(gold_corpus_path=dev_path, \
+                                   test_corpus_path=test_path, \
+                                   commons_path=commons_path)
+
+
+# A trainer reads one example at a time, till a count of num_examples is
+# reached. For each example it computes the loss.
+# After every 'batch_size' examples, it computes the gradient and applies
+# it, with optional gradient clipping.
+class Trainer:
+  def __init__(self, sempar, evaluator=None):
+    self.model = sempar
+    self.evaluator = evaluator
+
+    self.num_examples = 1000000
+    self.report_every = 8000
+    self.l2_coeff = 0.0001
+    self.batch_size = 8
+    self.gradient_clip = 1.0  # 'None' to disable clipping
+    self.optimizer = optim.Adam(
+      sempar.parameters(), weight_decay=self.l2_coeff, \
+      betas=(0.01, 0.999), eps=1e-5)
+
+    self.current_batch_size = 0
+    self.batch_loss = Var(torch.FloatTensor([0.0]))
+    #optimizer = optim.Adam(sempar.parameters(), weight_decay=l2_coeff)
+    self._reset()
+    self.count = 0
+    self.last_eval_count = 0
+
+  def _reset(self):
+    self.current_batch_size = 0
+    del self.batch_loss
+    self.batch_loss = Var(torch.FloatTensor([0.0]))
+    self.optimizer.zero_grad()
+
+
+  def process(self, example):
+    loss = self.model.forward(example, train=True)
+    self.batch_loss += loss
+    self.current_batch_size += 1
+    self.count += 1
+    if self.current_batch_size == self.batch_size:
+      self.update()
+    if self.count % self.report_every == 0:
+      self.evaluate()
+
+
+  def update(self):
+    if self.current_batch_size > 0:
+      self.batch_loss /= self.current_batch_size
+      value = self.batch_loss.data[0]
+      print "BatchLoss after", self.count, "examples:", value, now(), mem()
+      self.batch_loss.backward()
+      if self.gradient_clip is not None:
+        torch.nn.utils.clip_grad_norm(
+            self.model.parameters(), self.gradient_clip)
+      self.optimizer.step()
+      self._reset()
+
+  def evaluate(self):
+    if self.evaluator is not None and self.count != self.last_eval_count:
+      self.last_eval_count = self.count
+      metrics = self.evaluator(self.model)
+      print "Eval metric after", self.count, ":", metrics["eval_metric"]
+
+
+def learn(sempar, corpora, evaluator=None, illustrate=False):
   # Pick a reasonably long sample document.
   sample_doc = corpora.documents[0]
   for d in corpora.documents:
@@ -305,57 +384,14 @@ def learn(sempar, corpora, dev_path=None, commons_path=None, illustrate=False):
       sample_doc = d
       break
 
-  num_epochs = 200
-  l2_coeff = 0.0001
-  batch_size = 2
-  report_every = 500
-  gradient_clip = 1.0
-  optimizer = optim.Adam(
-      sempar.parameters(), weight_decay=l2_coeff, \
-      betas=(0.01, 0.999), eps=1e-5)
-  #optimizer = optim.Adam(sempar.parameters(), weight_decay=l2_coeff)
-
-  current_batch_size = 0
-  batch_loss = Var(torch.FloatTensor([0.0]))
-  optimizer.zero_grad()
-
+  trainer = Trainer(sempar, evaluator)
   corpora.shuffle()
-  for epoch in xrange(num_epochs):
-    if epoch % batch_size == 0:
-      if current_batch_size > 0:
-        batch_loss /= current_batch_size
-        print "Epoch", epoch, "BatchLoss", batch_loss.data[0]
-        batch_loss.backward()
-        if gradient_clip is not None:
-          torch.nn.utils.clip_grad_norm(sempar.parameters(), gradient_clip)
-        optimizer.step()
+  for index in xrange(trainer.num_examples):
+    trainer.process(corpora.documents[index % corpora.size()])
 
-      del batch_loss
-      current_batch_size = 0
-      batch_loss = Var(torch.FloatTensor([0.0]))
-      optimizer.zero_grad()
-
-    loss = sempar.forward(corpora.documents[epoch % corpora.size()], train=True)
-    batch_loss += loss
-    current_batch_size += 1
-    #if batch_size > 1: print "  Epoch", epoch, "BatchItemLoss", loss.data[0]
-
-    if (epoch + 1) % report_every == 0 and dev_path is not None:
-      print "Dev loss at", epoch, ":", \
-          dev_accuracy(sempar, dev_path, commons_path)
-
-
-  # Process the partial batch (if any) at the end.
-  if current_batch_size > 0:
-    batch_loss /= current_batch_size
-    print "Epoch", epoch, "BatchLoss", batch_loss.data[0]
-    batch_loss.backward()
-    if gradient_clip is not None:
-      torch.nn.utils.clip_grad_norm(sempar.parameters(), gradient_clip)
-    optimizer.step()
-
-    #if dev_path is not None:
-    #  print "Dev loss at", epoch, ":", dev_loss(sempar, dev)
+  # Process the partial batch (if any) at the end, and evaluate one last time.
+  trainer.update()
+  trainer.evaluate()
 
   # See how the sample document performs on the trained model.
   if illustrate:
@@ -368,28 +404,33 @@ def learn(sempar, corpora, dev_path=None, commons_path=None, illustrate=False):
     state.write()
     for a in state.actions:
       print "Predicted", a
-    print sample_doc.inner.frame.data(binary=False, shallow=True, pretty=True)
+    print state.textual()
 
 
 def trial_run():
+  print "Initial memory usage", mem()
   path = "/usr/local/google/home/grahul/sempar_ontonotes/"
+  commons_path = path + "commons.new"
   commons = sling.Store()
-  commons.load(path + "commons.new")
+  commons.load(commons_path)
   commons.freeze()
   schema = sling.DocumentSchema(commons)
 
   train = training.Corpora()
-  train.read(path + "train.rec", commons, schema, max_count=2)
+  train.read(path + "train.rec", commons, schema, max_count=None)
+  print "After reading training corpus", mem()
 
   spec = training.Spec()
   spec.build(commons, train)
+  print "After building spec", mem()
 
-  #train.shuffle()
-  #dev = train.subset(0, 1)
-  #train = train.subset(0, 10000)
   print train.size(), "train documents read"
-  #print dev.size(), "dev documents read"
   sempar = Sempar(spec)
-  learn(sempar, train, dev_path=None, illustrate=True)
+
+  dev_path = path + "dev.rec"
+  tmp_folder = path + "tmp/"
+  evaluator = partial(
+      dev_accuracy, commons_path, commons, dev_path, schema, tmp_folder)
+  learn(sempar, train, evaluator, illustrate=True)
 
 trial_run()
