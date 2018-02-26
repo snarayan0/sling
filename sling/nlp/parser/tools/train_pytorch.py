@@ -304,7 +304,7 @@ def dev_accuracy(commons_path, commons, dev_path, schema, tmp_folder, sempar):
     state = sempar.forward(document, train=False)
     state.write()
     writer.write(str(index), state.encoded())
-    if (index + 1) % 50 == 0:
+    if (index + 1) % 100 == 0:
       print "  Annotated", (index + 1), "documents", now(), mem()
   writer.close()
   print "Annotated", dev.size(), "documents", now(), mem()
@@ -323,8 +323,8 @@ class Trainer:
     self.model = sempar
     self.evaluator = evaluator
 
-    self.num_examples = 1000000
-    self.report_every = 8000
+    self.num_examples = 2000
+    self.report_every = 5000
     self.l2_coeff = 0.0001
     self.batch_size = 8
     self.gradient_clip = 1.0  # 'None' to disable clipping
@@ -338,6 +338,11 @@ class Trainer:
     self._reset()
     self.count = 0
     self.last_eval_count = 0
+
+    self.checkpoint_metrics = []
+    self.best_parameters = None
+    self.best_metric = None
+
 
   def _reset(self):
     self.current_batch_size = 0
@@ -373,7 +378,12 @@ class Trainer:
     if self.evaluator is not None and self.count != self.last_eval_count:
       self.last_eval_count = self.count
       metrics = self.evaluator(self.model)
-      print "Eval metric after", self.count, ":", metrics["eval_metric"]
+      self.checkpoint_metrics.append((self.count, metrics))
+      eval_metric = metrics["eval_metric"]
+      print "Eval metric after", self.count, ":", eval_metric
+      if self.best_metric is None or self.best_metric < eval_metric:
+        self.best_metric = eval_metric
+
 
 
 def learn(sempar, corpora, evaluator=None, illustrate=False):

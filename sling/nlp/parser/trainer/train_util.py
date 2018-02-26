@@ -15,6 +15,7 @@
 
 import random
 import sling
+import string
 import subprocess
 
 # Class for computing and serving a lexicon.
@@ -572,6 +573,7 @@ class Spec:
     # Fixed feature dimensionalities.
     self.words_dim = 32
     self.suffixes_dim = 16
+    self.fallback_dim = 8  # dimensionality of each fallback feature
     self.roles_dim = 16
 
     # History feature size.
@@ -607,8 +609,9 @@ class Spec:
 
 
   # Returns suffix(es) of 'word'.
-  def get_suffixes(self, word):
-    unicode_chars = list(word.decode("utf-8"))
+  def get_suffixes(self, word, unicode_chars=None)
+    if unicode_chars is None:
+      unicode_chars = list(word.decode("utf-8"))
     output = []
     for length in xrange(1, self.suffixes_max_length + 1):
       if len(unicode_chars) >= length:
@@ -649,6 +652,11 @@ class Spec:
     self.lstm_features = [
       FeatureSpec("word", dim=self.words_dim, vocab=self.words.size()),
       FeatureSpec("suffix", dim=self.suffixes_dim, vocab=self.suffix.size())
+      FeatureSpec("hyphen", dim=self.fallback_dim, vocab=2)
+      FeatureSpec("capitalization", dim=self.fallback_dim, vocab=5)
+      FeatureSpec("punctuation", dim=self.fallback_dim, vocab=3)
+      FeatureSpec("quote", dim=self.fallback_dim, vocab=4)
+      FeatureSpec("digit", dim=self.fallback_dim, vocab=3)
     ]
     self.lstm_input_dim = sum([f.dim for f in self.lstm_features])
     print "LSTM input dim", self.lstm_input_dim
@@ -690,18 +698,26 @@ class Spec:
   # Returns raw indices of LSTM features for all tokens in 'document'.
   def raw_lstm_features(self, document):
     output = []
+    unicode_chars = []
+    for token in document.tokens():
+      unicode_chars.append(list(token.text.decode("utf-8")))
+
     for f in self.lstm_features:
       features = Feature()
       output.append(features)
       if f.name == "word":
-        for token in document.tokens():
+        for index, token in enumerate(document.tokens()):
           features.new_offset()
           features.add(self.words.index(token.text))
       elif f.name == "suffix":
-        for token in document.tokens():
+        for index, token in enumerate(document.tokens()):
           features.new_offset()
-          for s in self.get_suffixes(token.text):
+          for s in self.get_suffixes(token.text, unicode_chars[index]):
             features.add(self.suffix.index(s))
+      elif f.name == "hyphen":
+        for index, token in enumerate(document.tokens()):
+          features.new_offset()
+          features.add(1 if hyphen else 0)
       else:
         raise ValueError("LSTM feature '", f.name, "' not implemented")
     return output
@@ -1001,9 +1017,6 @@ class ParserState:
       return -1
     else:
       return self.attention[index].end - 1
-  def _add_to_attention(self, f):
-    f.focus = self.steps
-    self.attention.insert(0, f)
 
 
   def advance(self, action):
@@ -1074,7 +1087,7 @@ class ParserState:
     if document is None:
       document = self.document.inner
 
-    assert type(document) is sling.Document
+    assert type(document) == sling.Document
 
     store = document.frame.store()
     document.remove_annotations()
@@ -1089,8 +1102,12 @@ class ParserState:
     for f in self.frames:
       frame = frames[f]
       for role, value in f.edges:
-        assert value in frames
-        frame.append(role, frames[value])
+        if isinstance(value, ParserState.Frame):
+          assert value in frames
+          frame.append(role, frames[value])
+        else:
+          assert type(value) == sling.Frame, "%r" % value
+          frame.append(role, value)
 
     for s in self.spans:
       # Note: mention.frame is the actual mention frame.
@@ -1112,6 +1129,11 @@ class ParserState:
 
   def textual(self):
     return self.data(binary=False, pretty=True, shallow=True)
+
+
+  def _add_to_attention(self, f):
+    f.focus = self.steps
+    self.attention.insert(0, f)
 
 
   def _refocus_attention(self, index):
