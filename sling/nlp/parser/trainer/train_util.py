@@ -12,11 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
+import os
+import psutil
 import random
 import sling
+import struct
 import subprocess
 import unicodedata
+
+from datetime import datetime
+
 
 # Class for computing and serving a lexicon.
 # Usage:
@@ -59,7 +64,6 @@ class Lexicon:
         index = len(self.index_to_item)
         self.item_to_index[item] = index
         self.index_to_item[index] = item
-    print len(self.item_to_index), "items in lexicon, including OOV"
 
 
   def size(self):
@@ -590,6 +594,8 @@ class Spec:
     self.actions = None
     self.words = None
     self.suffix = None
+    self.word_embeddings = None
+    self.word_embedding_indices = None
 
 
   # Builds an action table from 'corpora'.
@@ -647,6 +653,8 @@ class Spec:
           self.suffix.add(s)
     self.words.finalize()
     self.suffix.finalize()
+    print "Words:", self.words.size(), "items in lexicon, including OOV"
+    print "Suffix:", self.suffix.size(), "items in lexicon, including OOV"
 
     # Prepare action table.
     self._build_action_table(corpora)
@@ -696,6 +704,48 @@ class Spec:
     # - Feature specs.
     #
     # Does it make sense to write all this in one giant encoded SLING frame?
+
+
+  def load_word_embeddings(self, embeddings_file):
+    self.word_embeddings = [None] * self.words.size()
+    f = open(embeddings_file, 'rb')
+
+    # Read header.
+    header = f.readline().strip()
+    size = int(header.split()[0])
+    dim = int(header.split()[1])
+    assert dim == self.words_dim, "%r vs %r" % (dim, self.words_dim)
+
+    # Read vectors for known words.
+    count = 0
+    fmt = "f" * dim
+    vector_size = 4 * dim
+    oov = self.words.oov_index
+    for _ in xrange(size):
+      word = ""
+      while True:
+        ch = f.read(1)
+        if ch == " ": break
+        word += ch
+
+      vector = list(struct.unpack(fmt, f.read(4 * dim)))  # 4 = sizeof(float)
+      ch = f.read(1)
+      assert ch == "\n", "%r" % ch     # end of line expected
+
+      index = self.words.index(word)
+      if index != oov and self.word_embeddings[index] is None:
+        self.word_embeddings[index] = vector
+        count += 1
+
+    f.close()
+
+    self.word_embedding_indices =\
+        [i for i, v in enumerate(self.word_embeddings) if v is not None]
+    self.word_embeddings = [v for v in self.word_embeddings if v is not None]
+
+    print "Loaded", count, "pre-trained embeddings from file with", size, \
+        "vectors. Vectors for remaining", (self.words.size() - count), \
+        "words will be randomly initialized."
 
 
   # Returns raw indices of LSTM features for all tokens in 'document'.
@@ -1253,4 +1303,47 @@ def frame_evaluation(gold_corpus_path, test_corpus_path, commons_path):
   assert eval_output.has_key('eval_metric'), "%r" % str(eval_output)
   return eval_output
 
+
+def now():
+  return "[" + str(datetime.now()) + "]"
+
+
+def mem():
+  p = psutil.Process(os.getpid())
+  return str(p.memory_info())
+
+
+class Resources:
+  def __init__(self):
+    self.commons_path = None
+    self.commons = None
+    self.schema = None
+    self.train = None
+    self.spec = None
+
+
+  def load(self,
+           commons_path,
+           train_path,
+           max_count=None,
+           word_embeddings_path=None):
+    print "Loading training resources"
+    print "Initial memory usage", mem()
+    self.commons_path = commons_path
+    self.commons = sling.Store()
+    self.commons.load(commons_path)
+    self.commons.freeze()
+    self.schema = sling.DocumentSchema(self.commons)
+
+    self.train = Corpora()
+    self.train.read(train_path, self.commons, self.schema, max_count=max_count)
+    print "Read training corpus of size", self.train.size(),  mem()
+
+    self.spec = Spec()
+    self.spec.build(self.commons, self.train)
+    print "After building spec", mem()
+
+    if word_embeddings_path is not None:
+      self.spec.load_word_embeddings(word_embeddings_path)
+      print "After loading pre-trained word embeddings", mem()
 

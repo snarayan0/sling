@@ -14,7 +14,6 @@
 
 import os
 import random
-import psutil
 import sling
 import sys
 import torch
@@ -25,9 +24,10 @@ import torch.optim as optim
 sys.path.insert(0, "sling/nlp/parser/trainer")
 
 import train_util as training
-
-from datetime import datetime
 from functools import partial
+
+from train_util import mem as mem
+from train_util import now as now
 
 Var = autograd.Variable
 
@@ -47,13 +47,22 @@ class Sempar(nn.Module):
     self.lr_embeddings = []
     self.rl_embeddings = []
     for f in spec.lstm_features:
-      embedding = nn.EmbeddingBag(f.vocab_size, f.dim, mode='sum')
-      self.add_module('lr_lstm_embedding_' + f.name, embedding)
-      self.lr_embeddings.append(embedding)
+      lr_embedding = nn.EmbeddingBag(f.vocab_size, f.dim, mode='sum')
+      self.add_module('lr_lstm_embedding_' + f.name, lr_embedding)
+      self.lr_embeddings.append(lr_embedding)
 
-      embedding = nn.EmbeddingBag(f.vocab_size, f.dim, mode='sum')
-      self.add_module('rl_lstm_embedding_' + f.name, embedding)
-      self.rl_embeddings.append(embedding)
+      rl_embedding = nn.EmbeddingBag(f.vocab_size, f.dim, mode='sum')
+      self.add_module('rl_lstm_embedding_' + f.name, rl_embedding)
+      self.rl_embeddings.append(rl_embedding)
+
+      # Initialize with pre-trained word embeddings, if provided.
+      if f.name == "word" and spec.word_embeddings is not None:
+        indices = torch.LongTensor(spec.word_embedding_indices)
+        data = torch.Tensor(spec.word_embeddings)
+        lr_embedding.weight.data.index_copy_(0, indices, data)
+        rl_embedding.weight.data.index_copy_(0, indices, data)
+        print "Overwrote", len(spec.word_embeddings), f.name, \
+            "embedding vectors with pre-trained vectors."
 
     # Two LSTMs.
     input_dim = spec.lstm_input_dim
@@ -285,15 +294,6 @@ class Sempar(nn.Module):
       steps += 1
 
 
-def now():
-  return "[" + str(datetime.now()) + "]"
-
-
-def mem():
-  p = psutil.Process(os.getpid())
-  return str(p.memory_info())
-
-
 def dev_accuracy(commons_path, commons, dev_path, schema, tmp_folder, sempar):
   dev = training.Corpora()
   dev.read(dev_path, commons, schema, max_count=None)
@@ -418,29 +418,23 @@ def learn(sempar, corpora, evaluator=None, illustrate=False):
 
 
 def trial_run():
-  print "Initial memory usage", mem()
   path = "/usr/local/google/home/grahul/sempar_ontonotes/"
-  commons_path = path + "commons.new"
-  commons = sling.Store()
-  commons.load(commons_path)
-  commons.freeze()
-  schema = sling.DocumentSchema(commons)
+  resources = training.Resources()
+  resources.load(commons_path=path + "commons.new",
+                 train_path=path + "train.rec",
+                 max_count=1000,
+                 word_embeddings_path=path + "word2vec-32-embeddings.bin")
 
-  train = training.Corpora()
-  train.read(path + "train.rec", commons, schema, max_count=None)
-  print "After reading training corpus", mem()
-
-  spec = training.Spec()
-  spec.build(commons, train)
-  print "After building spec", mem()
-
-  print train.size(), "train documents read"
-  sempar = Sempar(spec)
+  sempar = Sempar(resources.spec)
 
   dev_path = path + "dev.rec"
   tmp_folder = path + "tmp/"
-  evaluator = partial(
-      dev_accuracy, commons_path, commons, dev_path, schema, tmp_folder)
-  learn(sempar, train, evaluator, illustrate=True)
+  evaluator = partial(dev_accuracy,
+                      resources.commons_path,
+                      resources.commons,
+                      dev_path,
+                      resources.schema,
+                      tmp_folder)
+  learn(sempar, resources.train, evaluator, illustrate=True)
 
 trial_run()
