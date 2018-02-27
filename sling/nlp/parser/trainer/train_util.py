@@ -15,8 +15,8 @@
 
 import random
 import sling
-import string
 import subprocess
+import unicodedata
 
 # Class for computing and serving a lexicon.
 # Usage:
@@ -490,7 +490,7 @@ class Actions:
       self.stop_index = index
 
 
-  def _disallow(self, action_type, action_field, percentile):
+  def _maxvalue(self, action_type, action_field, percentile):
     values = []
     for action, count in zip(self.table, self.counts):
       if action_type is None or action.type == action_type:
@@ -513,14 +513,17 @@ class Actions:
 
 
   def prune(self, percentile):
+    p = percentile
+    if p < 1 and type(p) is float: p = int(p * 100)
+
     self.disallowed = [False] * self.size()
-    self.max_span_length = self._disallow(None, "length", percentile)
-    self.max_connect_source = self._disallow(Action.CONNECT, "source", percentile)
-    self.max_connect_target = self._disallow(Action.CONNECT, "target", percentile)
-    self.max_assign_source = self._disallow(Action.ASSIGN, "source", percentile)
-    self.max_refer_target = self._disallow(Action.REFER, "target", percentile)
-    self.max_embed_target = self._disallow(Action.EMBED, "target", percentile)
-    self.max_elaborate_source = self._disallow(Action.ELABORATE, "source", percentile)
+    self.max_span_length = self._maxvalue(None, "length", percentile)
+    self.max_connect_source = self._maxvalue(Action.CONNECT, "source", p)
+    self.max_connect_target = self._maxvalue(Action.CONNECT, "target", p)
+    self.max_assign_source = self._maxvalue(Action.ASSIGN, "source", p)
+    self.max_refer_target = self._maxvalue(Action.REFER, "target", p)
+    self.max_embed_target = self._maxvalue(Action.EMBED, "target", p)
+    self.max_elaborate_source = self._maxvalue(Action.ELABORATE, "source", p)
     self.max_action_index = max([
       self.max_connect_source, self.max_connect_target,
       self.max_refer_target, self.max_embed_target,
@@ -609,7 +612,7 @@ class Spec:
 
 
   # Returns suffix(es) of 'word'.
-  def get_suffixes(self, word, unicode_chars=None)
+  def get_suffixes(self, word, unicode_chars=None):
     if unicode_chars is None:
       unicode_chars = list(word.decode("utf-8"))
     output = []
@@ -651,11 +654,11 @@ class Spec:
     # LSTM features.
     self.lstm_features = [
       FeatureSpec("word", dim=self.words_dim, vocab=self.words.size()),
-      FeatureSpec("suffix", dim=self.suffixes_dim, vocab=self.suffix.size())
-      FeatureSpec("hyphen", dim=self.fallback_dim, vocab=2)
-      FeatureSpec("capitalization", dim=self.fallback_dim, vocab=5)
-      FeatureSpec("punctuation", dim=self.fallback_dim, vocab=3)
-      FeatureSpec("quote", dim=self.fallback_dim, vocab=4)
+      FeatureSpec("suffix", dim=self.suffixes_dim, vocab=self.suffix.size()),
+      FeatureSpec("hyphen", dim=self.fallback_dim, vocab=2),
+      FeatureSpec("capitalization", dim=self.fallback_dim, vocab=5),
+      FeatureSpec("punctuation", dim=self.fallback_dim, vocab=3),
+      FeatureSpec("quote", dim=self.fallback_dim, vocab=4),
       FeatureSpec("digit", dim=self.fallback_dim, vocab=3)
     ]
     self.lstm_input_dim = sum([f.dim for f in self.lstm_features])
@@ -698,26 +701,97 @@ class Spec:
   # Returns raw indices of LSTM features for all tokens in 'document'.
   def raw_lstm_features(self, document):
     output = []
-    unicode_chars = []
+    chars = []
+    categories = []
     for token in document.tokens():
-      unicode_chars.append(list(token.text.decode("utf-8")))
+      decoding = list(token.text.decode("utf-8"))
+      chars.append(decoding)
+      categories.append([unicodedata.category(ch) for ch in decoding])
 
     for f in self.lstm_features:
       features = Feature()
       output.append(features)
       if f.name == "word":
-        for index, token in enumerate(document.tokens()):
+        for token in document.tokens():
           features.new_offset()
           features.add(self.words.index(token.text))
       elif f.name == "suffix":
         for index, token in enumerate(document.tokens()):
           features.new_offset()
-          for s in self.get_suffixes(token.text, unicode_chars[index]):
+          for s in self.get_suffixes(token.text, chars[index]):
             features.add(self.suffix.index(s))
       elif f.name == "hyphen":
         for index, token in enumerate(document.tokens()):
           features.new_offset()
+          hyphen = any(c == 'Pd' for c in categories[index])
           features.add(1 if hyphen else 0)
+      elif f.name == "capitalization":
+        for index, token in enumerate(document.tokens()):
+          features.new_offset()
+          has_upper = any(c == 'Lu' for c in categories[index])
+          has_lower = any(c == 'Ll' for c in categories[index])
+
+          value = 2
+          if not has_upper and has_lower:
+            value = 0
+          elif has_upper and not has_lower:
+            value = 1
+          elif not has_upper and not has_lower:
+            value = 4
+          elif index == 0 or token.brk >= 3:  # 3 = SENTENCE_BREAK
+            value = 3
+          features.add(value)
+      elif f.name == "punctuation":
+        for index in xrange(len(document.tokens())):
+          features.new_offset()
+          all_punct = all(c[0] == 'P' for c in categories[index])
+          some_punct = any(c[0] == 'P' for c in categories[index])
+
+          if all_punct:
+            features.add(2)
+          elif some_punct:
+            features.add(1)
+          else:
+            features.add(0)
+
+      elif f.name == "digit":
+        for index in xrange(len(document.tokens())):
+          features.new_offset()
+          all_digit = all(c == 'Nd' for c in categories[index])
+          some_digit = any(c == 'Nd' for c in categories[index])
+
+          if all_digit:
+            features.add(2)
+          elif some_digit:
+            features.add(1)
+          else:
+            features.add(0)
+
+      elif f.name == "quote":
+        in_quote = False
+        for index in xrange(len(document.tokens())):
+          features.new_offset()
+          value = 0
+          for cat, ch in zip(categories[index], chars[index]):
+            if cat == 'Pi':
+              value = 1
+            elif cat == 'Pf':
+              value = 2
+            elif cat == 'Po' and (ch == '\'' or ch == '"'):
+              value = 3
+            elif cat == 'Sk' and ch == '`':
+              value = 3
+          if value != 0:
+            token = document.tokens()[index]
+            if token.text == "``":
+              value = 1
+            elif token.text == "''":
+              value = 2
+            if value == 3:
+              value = 2 if in_quote else 1
+              in_quote = not in_quote
+          features.add(value)
+
       else:
         raise ValueError("LSTM feature '", f.name, "' not implemented")
     return output

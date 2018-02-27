@@ -291,7 +291,7 @@ def now():
 
 def mem():
   p = psutil.Process(os.getpid())
-  return str(p.get_memory_info())
+  return str(p.memory_info())
 
 
 def dev_accuracy(commons_path, commons, dev_path, schema, tmp_folder, sempar):
@@ -323,18 +323,17 @@ class Trainer:
     self.model = sempar
     self.evaluator = evaluator
 
-    self.num_examples = 2000
+    self.num_examples = 200000
     self.report_every = 5000
     self.l2_coeff = 0.0001
     self.batch_size = 8
     self.gradient_clip = 1.0  # 'None' to disable clipping
     self.optimizer = optim.Adam(
-      sempar.parameters(), weight_decay=self.l2_coeff, \
+      sempar.parameters(), lr=0.0005, weight_decay=self.l2_coeff, \
       betas=(0.01, 0.999), eps=1e-5)
 
     self.current_batch_size = 0
     self.batch_loss = Var(torch.FloatTensor([0.0]))
-    #optimizer = optim.Adam(sempar.parameters(), weight_decay=l2_coeff)
     self._reset()
     self.count = 0
     self.last_eval_count = 0
@@ -373,6 +372,7 @@ class Trainer:
             self.model.parameters(), self.gradient_clip)
       self.optimizer.step()
       self._reset()
+
 
   def evaluate(self):
     if self.evaluator is not None and self.count != self.last_eval_count:
