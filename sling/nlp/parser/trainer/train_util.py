@@ -120,36 +120,46 @@ class Document:
     return len(self.tokens())
 
 
-# A set of documents.
+# An iterator over a recordio of documents.
 class Corpora:
-  def __init__(self):
-    self.documents = []
+  def __init__(self, recordio, commons, schema, gold=False, loop=False):
+    self.filename = recordio
+    self.commons = commons
+    self.schema = schema
+    self.reader = sling.RecordReader(recordio)
+    self.generator = None
+    self.loop = loop
+    if gold:
+      self.generator = TransitionGenerator(self.commons)
 
 
-  def read(self, recordio_filename, commons, schema, max_count=None):
-    reader = sling.RecordReader(recordio_filename)
-    for _, value in reader:
-      self.add(Document(commons, schema, value))
-      if max_count is not None and max_count <= len(self.documents): break
-    reader.close()
+  def __del__(self):
+    self.reader.close()
 
 
-  def size(self):
-    return len(self.documents)
+  def __iter__(self):
+    return self
+
+  def set_loop(self, val):
+    self.loop = val
 
 
-  def add(self, doc):
-    self.documents.append(doc)
+  def next(self):
+    if self.reader.done():
+      if self.loop:
+        self.reader.rewind()
+      else:
+        raise StopIteration
+
+    (_, value) = self.reader.next()
+    document = Document(self.commons, self.schema, value)
+    if self.generator is not None:
+      document.gold = self.generator.generate(document)
+    return document
 
 
-  def shuffle(self):
-    random.shuffle(self.documents)
-
-
-  def subset(self, start, end):
-    s = Corpora()
-    s.documents = self.documents[start:end]
-    return s
+  def rewind(self):
+    self.reader.rewind()
 
 
 # Represents a single transition.
@@ -600,13 +610,12 @@ class Spec:
 
   # Builds an action table from 'corpora'.
   def _build_action_table(self, corpora):
+    corpora.rewind()
     self.actions = Actions()
-    generator = TransitionGenerator(self.commons)
-    for document in corpora.documents:
-      actions = generator.generate(document)
-      for action in actions:
+    for document in corpora:
+      assert document.size() == 0 or len(document.gold) > 0
+      for action in document.gold:
         self.actions.add(action)
-        document.gold.append(action)
 
     self.actions.prune(self.actions_percentile)
     self.num_actions = self.actions.size()
@@ -645,7 +654,8 @@ class Spec:
     self.suffix = Lexicon(
         self.suffixes_min_count, self.suffixes_normalize_digits)
 
-    for document in corpora.documents:
+    corpora.rewind()
+    for document in corpora:
       for token in document.tokens():
         word = token.text
         self.words.add(word)
@@ -686,8 +696,8 @@ class Spec:
 
     self.add_ff_link("frame_creation", 64, self.ff_hidden_dim, fl)
     self.add_ff_link("frame_focus", 64, self.ff_hidden_dim, fl)
-    self.add_ff_link("frame_end_lr", 64, self.lstm_hidden_dim, fl)
-    self.add_ff_link("frame_end_rl", 64, self.lstm_hidden_dim, fl)
+    self.add_ff_link("frame_end_lr", 32, self.lstm_hidden_dim, fl)
+    self.add_ff_link("frame_end_rl", 32, self.lstm_hidden_dim, fl)
     self.add_ff_link("lr", 32, self.lstm_hidden_dim, 1)
     self.add_ff_link("rl", 32, self.lstm_hidden_dim, 1)
     self.add_ff_link("history", 64, self.ff_hidden_dim, self.history_limit)
@@ -1325,7 +1335,6 @@ class Resources:
   def load(self,
            commons_path,
            train_path,
-           max_count=None,
            word_embeddings_path=None):
     print "Loading training resources"
     print "Initial memory usage", mem()
@@ -1335,9 +1344,9 @@ class Resources:
     self.commons.freeze()
     self.schema = sling.DocumentSchema(self.commons)
 
-    self.train = Corpora()
-    self.train.read(train_path, self.commons, self.schema, max_count=max_count)
-    print "Read training corpus of size", self.train.size(),  mem()
+    self.train = Corpora(
+        train_path, self.commons, self.schema, gold=True, loop=False)
+    print "Pointed to training corpus in", train_path, mem()
 
     self.spec = Spec()
     self.spec.build(self.commons, self.train)
