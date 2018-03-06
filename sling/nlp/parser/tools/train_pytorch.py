@@ -16,6 +16,7 @@ import os
 import random
 import sling
 import sys
+import time
 import torch
 import torch.autograd as autograd
 import torch.nn as nn
@@ -214,7 +215,9 @@ class Sempar(nn.Module):
     else:
       if document.size() == 0: return state
 
-      topk = 50 if 50 < self.spec.num_actions else self.spec.num_actions
+      topk = 7000
+      if topk > self.spec.num_actions:
+        topk = self.spec.num_actions
       shift = actions.shift()
       stop = actions.stop()
       predicted = shift
@@ -295,19 +298,23 @@ class Sempar(nn.Module):
 
 
 def dev_accuracy(commons_path, commons, dev_path, schema, tmp_folder, sempar):
-  dev = training.Corpora()
-  dev.read(dev_path, commons, schema, max_count=None)
-  print "Annotating", dev.size(), "documents", now(), mem()
-  test_path = os.path.join(tmp_folder, "test.eval.rec")
+  dev = training.Corpora(dev_path, commons, schema, gold=False, loop=False)
+  print "Annotating dev documents", now(), mem()
+  test_path = os.path.join(tmp_folder, "dev.annotated.rec")
   writer = sling.RecordWriter(test_path)
-  for index, document in enumerate(dev.documents):
+  count = 1
+  start_time = time.time()
+  for document in dev:
     state = sempar.forward(document, train=False)
     state.write()
-    writer.write(str(index), state.encoded())
-    if (index + 1) % 100 == 0:
-      print "  Annotated", (index + 1), "documents", now(), mem()
+    writer.write(str(count), state.encoded())
+    if count % 100 == 0:
+      print "  Annotated", count, "documents", now(), mem()
+    count += 1
   writer.close()
-  print "Annotated", dev.size(), "documents", now(), mem()
+  end_time = time.time()
+  print "Annotated", count, "documents in", "%.1f" % (end_time - start_time), \
+      "seconds", now(), mem()
 
   return training.frame_evaluation(gold_corpus_path=dev_path, \
                                    test_corpus_path=test_path, \
@@ -319,18 +326,20 @@ def dev_accuracy(commons_path, commons, dev_path, schema, tmp_folder, sempar):
 # After every 'batch_size' examples, it computes the gradient and applies
 # it, with optional gradient clipping.
 class Trainer:
-  def __init__(self, sempar, evaluator=None):
+  def __init__(self, sempar, evaluator=None, model_file=None):
     self.model = sempar
     self.evaluator = evaluator
 
-    self.num_examples = 200000
-    self.report_every = 5000
+    self.num_examples = 1200000
+    self.report_every = 40000
     self.l2_coeff = 0.0001
     self.batch_size = 8
-    self.gradient_clip = 1.0  # 'None' to disable clipping
+    self.gradient_clip = 1.0 # 'None' to disable clipping
     self.optimizer = optim.Adam(
       sempar.parameters(), lr=0.0005, weight_decay=self.l2_coeff, \
       betas=(0.01, 0.999), eps=1e-5)
+    print "Trainer params", str(self.__dict__)
+    print "Optimizer params", str(self.optimizer.__dict__)
 
     self.current_batch_size = 0
     self.batch_loss = Var(torch.FloatTensor([0.0]))
@@ -339,8 +348,8 @@ class Trainer:
     self.last_eval_count = 0
 
     self.checkpoint_metrics = []
-    self.best_parameters = None
     self.best_metric = None
+    self.model_file = model_file
 
 
   def _reset(self):
@@ -363,41 +372,63 @@ class Trainer:
 
   def update(self):
     if self.current_batch_size > 0:
+      start = time.time()
       self.batch_loss /= self.current_batch_size
+      self.batch_loss /= 3.0
       value = self.batch_loss.data[0]
-      print "BatchLoss after", self.count, "examples:", value, now(), mem()
       self.batch_loss.backward()
       if self.gradient_clip is not None:
         torch.nn.utils.clip_grad_norm(
             self.model.parameters(), self.gradient_clip)
       self.optimizer.step()
       self._reset()
+      end = time.time()
+      print "BatchLoss after (", (self.count / self.batch_size), "batches, ", \
+          self.count, "examples):", value, "(%.1f" % (end - start), "secs)", \
+          now(), mem()
 
 
   def evaluate(self):
-    if self.evaluator is not None and self.count != self.last_eval_count:
-      self.last_eval_count = self.count
-      metrics = self.evaluator(self.model)
-      self.checkpoint_metrics.append((self.count, metrics))
-      eval_metric = metrics["eval_metric"]
-      print "Eval metric after", self.count, ":", eval_metric
-      if self.best_metric is None or self.best_metric < eval_metric:
-        self.best_metric = eval_metric
+    if self.evaluator is not None:
+      if self.num_examples == 0 or self.count != self.last_eval_count:
+        metrics = self.evaluator(self.model)
+        self.checkpoint_metrics.append((self.count, metrics))
+        eval_metric = metrics["eval_metric"]
+        print "Eval metric after", self.count, ":", eval_metric
+
+        if self.count != self.last_eval_count:
+          current_file = self.model_file + ".latest"
+          torch.save(self.model.state_dict(), current_file)
+          print "Saving latest model at", current_file
+          if self.best_metric is None or self.best_metric < eval_metric:
+            self.best_metric = eval_metric
+            best_file = self.model_file + ".best"
+            torch.save(self.model.state_dict(), best_file)
+            print "Updating best model at", best_file
+        self.last_eval_count = self.count
 
 
 
 def learn(sempar, corpora, evaluator=None, illustrate=False):
   # Pick a reasonably long sample document.
-  sample_doc = corpora.documents[0]
-  for d in corpora.documents:
+  sample_doc = None
+  for d in corpora:
     if d.size() > 5:
       sample_doc = d
       break
 
-  trainer = Trainer(sempar, evaluator)
-  corpora.shuffle()
-  for index in xrange(trainer.num_examples):
-    trainer.process(corpora.documents[index % corpora.size()])
+  #if os.path.exists(model_file):
+  #  sempar.load_state_dict(torch.load(model_file))
+  #  print "Loaded model from", model_file
+
+  model_file = "/tmp/pytorch.model"
+  trainer = Trainer(sempar, evaluator, model_file)
+  corpora.rewind()
+  corpora.set_loop(True)
+  for document in corpora:
+    if trainer.count > trainer.num_examples:
+      break
+    trainer.process(document)
 
   # Process the partial batch (if any) at the end, and evaluate one last time.
   trainer.update()
@@ -421,8 +452,7 @@ def trial_run():
   path = "/usr/local/google/home/grahul/sempar_ontonotes/"
   resources = training.Resources()
   resources.load(commons_path=path + "commons.new",
-                 train_path=path + "train.rec",
-                 max_count=1000,
+                 train_path=path + "train_shuffled.rec",
                  word_embeddings_path=path + "word2vec-32-embeddings.bin")
 
   sempar = Sempar(resources.spec)
@@ -435,6 +465,6 @@ def trial_run():
                       dev_path,
                       resources.schema,
                       tmp_folder)
-  learn(sempar, resources.train, evaluator, illustrate=True)
+  learn(sempar, resources.train, evaluator, illustrate=False)
 
 trial_run()
