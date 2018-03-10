@@ -35,11 +35,20 @@ class Lexicon:
   def __init__(self, min_count=1, normalize_digits=True, oov_item="<UNKNOWN>"):
     self.min_count = min_count
     self.counts = {}
-    self.oov_item = oov_item
-    self.oov_index = 0   # OOV is always at position 0
     self.normalize_digits = normalize_digits
     self.item_to_index = {}
     self.index_to_item = {}
+
+    if oov_item is not None:
+      self.oov_item = oov_item
+      self.oov_index = 0   # Don't change this; OOV is always at position 0
+    else:
+      self.oov_item = None
+      self.oov_index = None
+
+
+  def has_oov(self):
+    return self.oov_index is not None
 
 
   def _key(self, item):
@@ -47,6 +56,19 @@ class Lexicon:
       return "".join([c if not c.isdigit() else '9' for c in list(item)])
     else:
       return item
+
+
+  def load(self, vocabfile):
+    with open(vocabfile, "r") as f:
+      index = 0
+      for line in f:
+        line = line.strip()
+        if line == self.oov_item:
+          assert index == self.oov_index, index
+        self.item_to_index[line] = index
+        self.index_to_item[index] = line
+        self.counts[line] = self.min_count
+        index += 1
 
 
   def add(self, item):
@@ -57,8 +79,9 @@ class Lexicon:
 
 
   def finalize(self):
-    self.index_to_item[self.oov_index] = self.oov_item
-    self.item_to_index[self.oov_item] = self.oov_index
+    if self.has_oov():
+      self.index_to_item[self.oov_index] = self.oov_item
+      self.item_to_index[self.oov_item] = self.oov_index
     for item, count in self.counts.iteritems():
       if count >= self.min_count and item not in self.item_to_index:
         index = len(self.index_to_item)
@@ -73,7 +96,7 @@ class Lexicon:
   def index(self, item):
     item = self._key(item)
     if item not in self.item_to_index:
-      return self.oov_index
+      return self.oov_index  # None if !has_oov()
     else:
       return self.item_to_index[item]
 
@@ -81,6 +104,11 @@ class Lexicon:
   def value(self, index):
     assert index >= 0 and index < len(self.index_to_item), "%r" % index
     return self.index_to_item[index]
+
+
+  def __str__(self):
+    s = [item for _, item in self.index_to_item.iteritems()]
+    return "\n".join(s)
 
 
 # Mention comparator function.
@@ -547,17 +575,22 @@ class Actions:
 # Stores raw feature indices.
 class Feature:
   def __init__(self):
-    self.indices = []
-    self.offsets = []
+    self.indices = []  # list of lists of indices
+    self.has_empty = False
+    self.has_multi = False
 
 
   def add(self, index):
-    self.indices.append(index)
-
-
-  def new_offset(self):
-    assert len(self.offsets) == 0 or self.offsets[-1] < len(self.indices)
-    self.offsets.append(len(self.indices))
+    if type(index) is int:
+      self.indices.append(index)
+    else:
+      assert type(index) is list
+      if len(index) == 1:
+        self.indices.append(index[0])
+      else:
+        self.indices.append(index)
+        if len(index) == 0: self.has_empty = True
+        if len(index) > 1: self.has_multi = True
 
 
 # Specification for a single link or fixed feature.
@@ -578,26 +611,26 @@ class Spec:
     self.words_min_count = 1
     self.suffixes_normalize_digits = False
     self.suffixes_min_count = 1
-    self.suffixes_max_length = 3
+    self.suffixes_max_length = 1
 
     # Action table percentile.
     self.actions_percentile = 99
 
     # Network dimensionalities.
-    self.lstm_hidden_dim = 256
-    self.ff_hidden_dim = 128
+    self.lstm_hidden_dim = 8
+    self.ff_hidden_dim = 8
 
     # Fixed feature dimensionalities.
-    self.words_dim = 32
-    self.suffixes_dim = 16
-    self.fallback_dim = 8  # dimensionality of each fallback feature
-    self.roles_dim = 16
+    self.words_dim = 2
+    self.suffixes_dim = 2
+    self.fallback_dim = 2  # dimensionality of each fallback feature
+    self.roles_dim = 2
 
     # History feature size.
-    self.history_limit = 4
+    self.history_limit = 2
 
     # Frame limit for other link features.
-    self.frame_limit = 5
+    self.frame_limit = 2
 
     # Resources.
     self.commons = None
@@ -622,8 +655,12 @@ class Spec:
     print self.num_actions, "unique gold actions before pruning"
 
     allowed = self.num_actions - sum(self.actions.disallowed)
+    for i in xrange(self.num_actions):
+      print "Action", i, str(self.actions.table[i])
     print "num allowed actions after pruning", allowed
     print len(self.actions.roles), "unique roles in action table"
+    for i in xrange(len(self.actions.roles)):
+      print "Role", i, str(self.actions.roles[i])
 
 
   # Returns suffix(es) of 'word'.
@@ -649,10 +686,11 @@ class Spec:
   # Builds the spec using 'corpora'.
   def build(self, commons, corpora):
     # Prepare lexical dictionaries.
+    # For compatibility with DRAGNN, suffixes don't have an OOV item.
     self.commons = commons
     self.words = Lexicon(self.words_min_count, self.words_normalize_digits)
     self.suffix = Lexicon(
-        self.suffixes_min_count, self.suffixes_normalize_digits)
+        self.suffixes_min_count, self.suffixes_normalize_digits, oov_item=None)
 
     corpora.rewind()
     for document in corpora:
@@ -664,7 +702,11 @@ class Spec:
     self.words.finalize()
     self.suffix.finalize()
     print "Words:", self.words.size(), "items in lexicon, including OOV"
+    for i in xrange(self.words.size()):
+      print "Word", i, self.words.value(i)
     print "Suffix:", self.suffix.size(), "items in lexicon, including OOV"
+    for i in xrange(self.suffix.size()):
+      print "Suffix", i, self.suffix.value(i)
 
     # Prepare action table.
     self._build_action_table(corpora)
@@ -672,12 +714,12 @@ class Spec:
     # LSTM features.
     self.lstm_features = [
       FeatureSpec("word", dim=self.words_dim, vocab=self.words.size()),
-      FeatureSpec("suffix", dim=self.suffixes_dim, vocab=self.suffix.size()),
-      FeatureSpec("hyphen", dim=self.fallback_dim, vocab=2),
-      FeatureSpec("capitalization", dim=self.fallback_dim, vocab=5),
-      FeatureSpec("punctuation", dim=self.fallback_dim, vocab=3),
-      FeatureSpec("quote", dim=self.fallback_dim, vocab=4),
-      FeatureSpec("digit", dim=self.fallback_dim, vocab=3)
+      #FeatureSpec("suffix", dim=self.suffixes_dim, vocab=self.suffix.size()),
+      #FeatureSpec("hyphen", dim=self.fallback_dim, vocab=2),
+      #FeatureSpec("capitalization", dim=self.fallback_dim, vocab=5),
+      #FeatureSpec("punctuation", dim=self.fallback_dim, vocab=3),
+      #FeatureSpec("quote", dim=self.fallback_dim, vocab=4),
+      #FeatureSpec("digit", dim=self.fallback_dim, vocab=3)
     ]
     self.lstm_input_dim = sum([f.dim for f in self.lstm_features])
     print "LSTM input dim", self.lstm_input_dim
@@ -691,16 +733,16 @@ class Spec:
     if num_roles > 0:
       self.add_ff_fixed("in_roles", self.roles_dim, num_roles * fl)
       self.add_ff_fixed("out_roles", self.roles_dim, num_roles * fl)
-      self.add_ff_fixed("unlabeled_roles", self.roles_dim, fl * fl)
       self.add_ff_fixed("labeled_roles", self.roles_dim, num_roles * fl * fl)
+      self.add_ff_fixed("unlabeled_roles", self.roles_dim, fl * fl)
 
-    self.add_ff_link("frame_creation", 64, self.ff_hidden_dim, fl)
-    self.add_ff_link("frame_focus", 64, self.ff_hidden_dim, fl)
-    self.add_ff_link("frame_end_lr", 32, self.lstm_hidden_dim, fl)
-    self.add_ff_link("frame_end_rl", 32, self.lstm_hidden_dim, fl)
-    self.add_ff_link("lr", 32, self.lstm_hidden_dim, 1)
-    self.add_ff_link("rl", 32, self.lstm_hidden_dim, 1)
-    self.add_ff_link("history", 64, self.ff_hidden_dim, self.history_limit)
+    self.add_ff_link("frame_creation", 2, self.ff_hidden_dim, fl)
+    self.add_ff_link("frame_focus", 2, self.ff_hidden_dim, fl)
+    self.add_ff_link("frame_end_lr", 2, self.lstm_hidden_dim, fl)
+    self.add_ff_link("frame_end_rl", 2, self.lstm_hidden_dim, fl)
+    self.add_ff_link("history", 2, self.ff_hidden_dim, self.history_limit)
+    self.add_ff_link("lr", 2, self.lstm_hidden_dim, 1)
+    self.add_ff_link("rl", 2, self.lstm_hidden_dim, 1)
 
     self.ff_input_dim = sum([f.dim for f in self.ff_fixed_features])
     self.ff_input_dim += sum(
@@ -773,21 +815,18 @@ class Spec:
       output.append(features)
       if f.name == "word":
         for token in document.tokens():
-          features.new_offset()
           features.add(self.words.index(token.text))
       elif f.name == "suffix":
         for index, token in enumerate(document.tokens()):
-          features.new_offset()
-          for s in self.get_suffixes(token.text, chars[index]):
-            features.add(self.suffix.index(s))
+          suffixes = self.get_suffixes(token.text, chars[index])
+          ids = [self.suffix.index(s) for s in suffixes]
+          features.add([i for i in ids if i is not None])
       elif f.name == "hyphen":
         for index, token in enumerate(document.tokens()):
-          features.new_offset()
           hyphen = any(c == 'Pd' for c in categories[index])
           features.add(1 if hyphen else 0)
       elif f.name == "capitalization":
         for index, token in enumerate(document.tokens()):
-          features.new_offset()
           has_upper = any(c == 'Lu' for c in categories[index])
           has_lower = any(c == 'Ll' for c in categories[index])
 
@@ -803,7 +842,6 @@ class Spec:
           features.add(value)
       elif f.name == "punctuation":
         for index in xrange(len(document.tokens())):
-          features.new_offset()
           all_punct = all(c[0] == 'P' for c in categories[index])
           some_punct = any(c[0] == 'P' for c in categories[index])
 
@@ -816,7 +854,6 @@ class Spec:
 
       elif f.name == "digit":
         for index in xrange(len(document.tokens())):
-          features.new_offset()
           all_digit = all(c == 'Nd' for c in categories[index])
           some_digit = any(c == 'Nd' for c in categories[index])
 
@@ -830,7 +867,6 @@ class Spec:
       elif f.name == "quote":
         in_quote = False
         for index in xrange(len(document.tokens())):
-          features.new_offset()
           value = 0
           for cat, ch in zip(categories[index], chars[index]):
             if cat == 'Pi':

@@ -26,6 +26,10 @@ void SharedResources::LoadActionTable(const string &file) {
   sling::LoadStore(file, &temp);
   table.Init(&temp);
   roles.Init(table);
+
+  for (int i = 0; i < table.NumActions(); ++i) {
+    LOG(INFO) << "Action " << i << " " << table.Action(i).ToString(global);
+  }
 }
 
 void SharedResources::LoadGlobalStore(const string &file) {

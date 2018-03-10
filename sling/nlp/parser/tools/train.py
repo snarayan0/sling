@@ -214,7 +214,9 @@ def main(unused_argv):
   checkpoint_dir = os.path.dirname(checkpoint_path)
   empty_dir(checkpoint_dir)
 
-  with tf.Session(FLAGS.tf_master, graph=graph) as sess:
+  config = tf.ConfigProto(inter_op_parallelism_threads=1,\
+                          intra_op_parallelism_threads=1)
+  with tf.Session(FLAGS.tf_master, config=config, graph=graph) as sess:
     # Make sure to re-initialize all underlying state.
     sess.run(tf.global_variables_initializer())
 

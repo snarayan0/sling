@@ -48,29 +48,30 @@ set -eu
 readonly COMMAND=`echo $0 $@`
 
 # Input resources and arguments.
-SEM=local/sempar
-COMMONS=${SEM}/commons
-OUTPUT_FOLDER=${SEM}/out
-TRAIN_FILEPATTERN=${SEM}/train.rec
-DEV_FILEPATTERN=${SEM}/dev.rec
-WORD_EMBEDDINGS_DIM=32
-PRETRAINED_WORD_EMBEDDINGS=$SEM/word2vec-32-embeddings.bin
-OOV_FEATURES=true
+SEM=/home/grahul/sempar_ontonotes
+COMMONS=${SEM}/commons.new
+OUTPUT_FOLDER=${SEM}/out-tf
+TRAIN_FILEPATTERN=${SEM}/train.toy.rec
+DEV_FILEPATTERN=${SEM}/dev.toy.rec
+WORD_EMBEDDINGS_DIM=2
+PRETRAINED_WORD_EMBEDDINGS=
+OOV_FEATURES=false
 
 # Training hyperparameters.
-BATCH_SIZE=8
+BATCH_SIZE=1
 REPORT_EVERY=2000
-LEARNING_RATE=0.0005
+LEARNING_RATE=0.5
 SEED=2
-METHOD=adam
+METHOD=sgd
 ADAM_BETA1=0.01
 ADAM_BETA2=0.999
 ADAM_EPS=0.00001
-GRAD_CLIP_NORM=1.0
+GRAD_CLIP_NORM=0.0
 DROPOUT=1.0
-TRAIN_STEPS=200000
+TRAIN_STEPS=6
 DECAY_STEPS=500000
-MOVING_AVERAGE=true
+MOVING_AVERAGE=false
+L2_COEFFICIENT=0
 
 # Whether we should make the MasterSpec again or not.
 MAKE_SPEC=1
@@ -169,6 +170,10 @@ case $i in
     MOVING_AVERAGE="${i#*=}"
     shift
     ;;
+    --l2=*|--l2_coeff=*)
+    L2_COEFFICIENT="${i#*=}"
+    shift
+    ;;
     *)
     echo "Unknown option " $i
     exit 1
@@ -202,7 +207,9 @@ HYPERPARAMS="learning_rate:${LEARNING_RATE} decay_steps:${DECAY_STEPS} "
 HYPERPARAMS+="seed:${SEED} learning_method:'${METHOD}' "
 HYPERPARAMS+="use_moving_average:${MOVING_AVERAGE} dropout_rate:${DROPOUT} "
 HYPERPARAMS+="gradient_clip_norm:${GRAD_CLIP_NORM} adam_beta1:${ADAM_BETA1} "
-HYPERPARAMS+="adam_beta2:${ADAM_BETA2} adam_eps:${ADAM_EPS}"
+HYPERPARAMS+="adam_beta2:${ADAM_BETA2} adam_eps:${ADAM_EPS} "
+HYPERPARAMS+="l2_regularization_coefficient:${L2_COEFFICIENT} "
+
 
 mkdir -p "${OUTPUT_FOLDER}"
 

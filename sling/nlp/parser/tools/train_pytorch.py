@@ -24,6 +24,7 @@ import torch.optim as optim
 
 sys.path.insert(0, "sling/nlp/parser/trainer")
 
+import lstm as lstm
 import train_util as training
 from functools import partial
 
@@ -34,6 +35,7 @@ Var = autograd.Variable
 
 torch.manual_seed(1)
 random.seed(0x31337)
+
 
 class Sempar(nn.Module):
   def __init__(self, spec):
@@ -65,10 +67,12 @@ class Sempar(nn.Module):
         print "Overwrote", len(spec.word_embeddings), f.name, \
             "embedding vectors with pre-trained vectors."
 
-    # Two LSTMs.
+    # Two LSTM cells.
     input_dim = spec.lstm_input_dim
-    self.lr_lstm = nn.LSTM(input_dim, spec.lstm_hidden_dim, num_layers=1)
-    self.rl_lstm = nn.LSTM(input_dim, spec.lstm_hidden_dim, num_layers=1)
+    self.lr_lstm = lstm.DragnnLSTMCell(input_dim, spec.lstm_hidden_dim)
+    self.rl_lstm = lstm.DragnnLSTMCell(input_dim, spec.lstm_hidden_dim)
+    #self.lr_lstm = nn.LSTM(input_dim, spec.lstm_hidden_dim, num_layers=1)
+    #self.rl_lstm = nn.LSTM(input_dim, spec.lstm_hidden_dim, num_layers=1)
 
     # FF Embeddings and network.
     self.ff_fixed_embeddings = []
@@ -79,9 +83,16 @@ class Sempar(nn.Module):
       self.add_module('ff_fixed_embedding_' + f.name, embedding)
 
     for f in spec.ff_link_features:
-      transform = nn.Linear(f.activation_size, f.dim)
+      transform = nn.Linear(f.activation_size, f.dim, bias=False)
       self.ff_link_transforms.append(transform)
       self.add_module('ff_link_transform_' + f.name, transform)
+
+    # Specify vectors for missing link features, one vector per link feature.
+    self.ff_link_missing = nn.ParameterList(
+        [nn.Parameter(torch.randn(1, f.dim)) for f in spec.ff_link_features])
+    self.missing_map = {}
+    for index, f in enumerate(spec.ff_link_features):
+      self.missing_map['ff_link_transform_' + f.name] = self.ff_link_missing[index]
 
     # Feedforward unit. This is not a single nn.Sequential model since it does
     # not allow accessing the hidden layer's activation.
@@ -95,21 +106,72 @@ class Sempar(nn.Module):
     print "Modules:", self
 
 
+  def initialize(self, tf_file):
+    param_map = {}
+    unseen = {}
+    for name, p in self.named_parameters():
+      p.data.zero_()
+      param_map[name] = p
+      unseen[p] = name
+
+    with open(tf_file, "r") as f:
+      for line in f:
+        parts = line.split("=")
+        if len(parts) == 3 and parts[0] == "Init":
+          param = parts[1]
+          if param not in param_map:
+            paramw = param + ".weight"
+            if paramw not in param_map:
+              print 'Ignoring unknown param', param
+              continue
+            else:
+              param = paramw
+
+          t = torch.Tensor(eval(parts[2]))
+          if t.dim() == 1: t = t.view(1, -1)
+          del unseen[param_map[param]]
+          if param.find("ff_link_transform") != -1:
+            param_map[param].data = t[0:-1,:]  
+            if param.endswith(".weight"): param = param[0:-7]
+            assert param in self.missing_map
+            missing = self.missing_map[param]
+            missing.data = t[-1].view(1, -1)
+            del unseen[missing]
+          else:
+            param_map[param].data = t
+            print "Initialized", param, "with data of shape", param_map[param].data.size()
+
+    print "Didn't see values for:"
+    for param, name in unseen.iteritems():
+      print name
+
+    print "Final values:"
+    for name, p in self.named_parameters():
+      print name, "=", p.data
+
   def _embedding_lookup(self, embedding_bags, features):
     assert len(embedding_bags) == len(features)
     values = []
     for feature, bag in zip(features, embedding_bags):
-      indices = Var(torch.LongTensor(feature.indices))
-      offsets = Var(torch.LongTensor(feature.offsets))
-      values.append(bag(indices, offsets))
+      if not feature.has_multi and not feature.has_empty:
+        # This case covers features that return exactly one value per call.
+        # So this covers word features and all fallback features.
+        indices = Var(torch.LongTensor(feature.indices))
+        values.append(bag(indices.view(len(feature.indices), 1)))
+      else:
+        # Other features, e.g. suffixes, may return 0 or >1 ids.
+        subvalues = []
+        dim = bag.weight.size(1)
+        for i in feature.indices:
+          if type(i) is int:  # one feature id
+            subvalues.append(bag(Var(torch.LongTensor([i])).view(1, 1)))
+          elif len(i) > 0:    # multiple feature ids
+            subvalues.append(bag(Var(torch.LongTensor(i)).view(1, len(i))))
+          else:               # no feature id
+            subvalues.append(Var(torch.zeros(1, dim)))
+        values.append(torch.cat(subvalues, 0))
+
     return torch.cat(values, 1)
-
-
-  def _init_hidden(self):
-    num_layers = 1
-    batch_size = 1
-    return (Var(torch.randn(num_layers, batch_size, self.spec.lstm_hidden_dim)),
-        Var(torch.randn(num_layers, batch_size, self.spec.lstm_hidden_dim)))
 
 
   def _ff_output(
@@ -132,8 +194,10 @@ class Sempar(nn.Module):
       if debug: ff_input_parts_debug.append((f, raw_features))
 
     # Link features.
-    link_features = zip(self.spec.ff_link_features, self.ff_link_transforms)
-    for f, transform in link_features:
+    link_features = zip(
+        self.spec.ff_link_features, self.ff_link_transforms, \
+        self.ff_link_missing)
+    for f, transform, missing in link_features:
       link_debug = (f, [])
       indices = self.spec.translated_ff_link_features(f, state)
       assert len(indices) == f.num_links
@@ -148,18 +212,22 @@ class Sempar(nn.Module):
       for index in indices:
         if index is not None:
           assert len(activations) > index, "%r" % index
-          ff_input_parts.append(transform(activations[index]))
+          ff_input_parts.append(torch.mm(activations[index], transform.weight))
         else:
-          ff_input_parts.append(Var(torch.zeros(1, f.dim)))
+          ff_input_parts.append(missing)
 
       if debug:
         link_debug[1].extend(indices)
         ff_input_parts_debug.append(link_debug)
 
     ff_input = torch.cat(ff_input_parts, 1)
-    ff_hidden = self.ff_relu(self.ff_layer(ff_input))
+    print "ff_input", ff_input
+    ff_hidden = torch.mm(ff_input, self.ff_layer.weight) + self.ff_layer.bias
+    ff_hidden = self.ff_relu(ff_hidden)
     ff_activations.append(ff_hidden)
-    softmax_output = self.ff_softmax(ff_hidden)
+    softmax_output = torch.mm(ff_hidden, self.ff_softmax[0].weight) + self.ff_softmax[0].bias
+    print "rawlogits", softmax_output
+    softmax_output = self.ff_softmax[1](softmax_output)
     return softmax_output.view(self.spec.num_actions), ff_input_parts_debug
 
 
@@ -173,18 +241,13 @@ class Sempar(nn.Module):
     assert length == lr_lstm_inputs.size(0)
     assert length == rl_lstm_inputs.size(0)
 
-    # LSTM expects an input of shape (sequence length, batch size, input dim).
-    # In our case, batch size is 1.
-    lr_input = lr_lstm_inputs.view(length, 1, -1)
-    hidden = self._init_hidden()
-    lr_out, _ = self.lr_lstm(lr_input, hidden)
+    lr_out, _ = self.lr_lstm.forward(lr_lstm_inputs)
 
     # Note: Negative strides are not supported, otherwise we would just do:
     #   rl_input = rl_lstm_inputs[::-1]
     inverse_indices = torch.arange(length - 1, -1, -1).long()
-    rl_input = rl_lstm_inputs[inverse_indices].view(length, 1, -1)
-    hidden = self._init_hidden()
-    rl_out, _ = self.rl_lstm(rl_input, hidden)
+    rl_input = rl_lstm_inputs[inverse_indices]
+    rl_out, _ = self.rl_lstm.forward(rl_input)
 
     return (lr_out, rl_out, raw_features)
 
@@ -206,7 +269,9 @@ class Sempar(nn.Module):
 
         ff_output, _ = self._ff_output(lr_out, rl_out, ff_activations, state)
         gold_var = Var(torch.LongTensor([gold_index]))
-        loss += self.loss_fn(ff_output.view(1, -1), gold_var)
+        step_loss = self.loss_fn(ff_output.view(1, -1), gold_var)
+        print "Stepcost = ", step_loss
+        loss += step_loss
 
         assert state.is_allowed(gold_index), "Disallowed gold action: %r" % gold
         state.advance(gold)
@@ -330,16 +395,28 @@ class Trainer:
     self.model = sempar
     self.evaluator = evaluator
 
-    self.num_examples = 1200000
-    self.report_every = 40000
-    self.l2_coeff = 0.0001
-    self.batch_size = 8
-    self.gradient_clip = 1.0 # 'None' to disable clipping
-    self.optimizer = optim.Adam(
-      sempar.parameters(), lr=0.0005, weight_decay=self.l2_coeff, \
-      betas=(0.01, 0.999), eps=1e-5)
-    print "Trainer params", str(self.__dict__)
-    print "Optimizer params", str(self.optimizer.__dict__)
+    self.num_examples = 6
+    self.report_every = 2
+    self.l2_coeff = 0.0000
+    self.batch_size = 1
+    self.gradient_clip = None  # 'None' to disable clipping
+
+    self.optimizer = optim.SGD(
+      sempar.parameters(),
+      lr=0.5,
+      momentum=0,
+      dampening=0,
+      weight_decay=0,
+      nesterov=False)
+
+    num_elements = 0
+    for name, p in sempar.named_parameters():
+      print name, "requires_grad", p.requires_grad, p.size()
+      num_elements += torch.numel(p)
+    print "num elements", num_elements
+    #self.optimizer = optim.Adam(
+    #  sempar.parameters(), lr=0.5, weight_decay=self.l2_coeff, \
+    #  betas=(0.01, 0.999), eps=1e-5)
 
     self.current_batch_size = 0
     self.batch_loss = Var(torch.FloatTensor([0.0]))
@@ -374,7 +451,7 @@ class Trainer:
     if self.current_batch_size > 0:
       start = time.time()
       self.batch_loss /= self.current_batch_size
-      self.batch_loss /= 3.0
+      self.batch_loss /= 3.0  # for parity with TF
       value = self.batch_loss.data[0]
       self.batch_loss.backward()
       if self.gradient_clip is not None:
@@ -396,7 +473,7 @@ class Trainer:
         eval_metric = metrics["eval_metric"]
         print "Eval metric after", self.count, ":", eval_metric
 
-        if self.count != self.last_eval_count:
+        if self.count != self.last_eval_count and self.model_file is not None:
           current_file = self.model_file + ".latest"
           torch.save(self.model.state_dict(), current_file)
           print "Saving latest model at", current_file
@@ -421,7 +498,7 @@ def learn(sempar, corpora, evaluator=None, illustrate=False):
   #  sempar.load_state_dict(torch.load(model_file))
   #  print "Loaded model from", model_file
 
-  model_file = "/tmp/pytorch.model"
+  model_file = "/tmp/pytorch.toymodel"
   trainer = Trainer(sempar, evaluator, model_file)
   corpora.rewind()
   corpora.set_loop(True)
@@ -448,16 +525,52 @@ def learn(sempar, corpora, evaluator=None, illustrate=False):
     print state.textual()
 
 
-def trial_run():
-  path = "/usr/local/google/home/grahul/sempar_ontonotes/"
+def replicate():
+  torch.set_printoptions(precision=10)
+  path = "/home/grahul/sempar_ontonotes/"
   resources = training.Resources()
   resources.load(commons_path=path + "commons.new",
-                 train_path=path + "train_shuffled.rec",
-                 word_embeddings_path=path + "word2vec-32-embeddings.bin")
+                 train_path=path + "train.toy.rec",
+                 word_embeddings_path=None) #path + "word2vec-32-embeddings.bin")
+
+  sempar = Sempar(resources.spec)
+  sempar.initialize("/tmp/tf.debug")
+
+  sempar.spec.words.load("/home/grahul/sempar_ontonotes/out-tf/word-vocab")
+  print "Words\n-----\n", sempar.spec.words
+
+  dev_path = path + "dev.toy.rec"
+  tmp_folder = path + "tmp/"
+  evaluator = partial(dev_accuracy,
+                      resources.commons_path,
+                      resources.commons,
+                      dev_path,
+                      resources.schema,
+                      tmp_folder)
+  trainer = Trainer(sempar, evaluator, None)
+  resources.train.rewind()
+  resources.train.set_loop(True)
+  for document in resources.train:
+    if trainer.count > trainer.num_examples:
+      break
+    trainer.process(document)
+
+  # Process the partial batch (if any) at the end, and evaluate one last time.
+  #trainer.update()
+  #trainer.evaluate()
+
+
+
+def trial_run():
+  path = "/home/grahul/sempar_ontonotes/"
+  resources = training.Resources()
+  resources.load(commons_path=path + "commons.new",
+                 train_path=path + "train.toy.rec",
+                 word_embeddings_path=None) #path + "word2vec-32-embeddings.bin")
 
   sempar = Sempar(resources.spec)
 
-  dev_path = path + "dev.rec"
+  dev_path = path + "dev.toy.rec"
   tmp_folder = path + "tmp/"
   evaluator = partial(dev_accuracy,
                       resources.commons_path,
@@ -467,4 +580,4 @@ def trial_run():
                       tmp_folder)
   learn(sempar, resources.train, evaluator, illustrate=False)
 
-trial_run()
+replicate()

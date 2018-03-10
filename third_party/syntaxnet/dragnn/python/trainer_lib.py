@@ -53,12 +53,15 @@ def annotate_dataset(sess, annotator, eval_corpus):
   return processed
 
 
-def run_training_step(sess, trainer, train_corpus, batch_size):
+def run_training_step(sess, trainer, train_corpus, batch_size, start):
   """Runs a single iteration of train_op on a  sampled batch."""
-  batch = random.sample(train_corpus, batch_size)
+  #batch = random.sample(train_corpus, batch_size)
+  batch_idx = [i % len(train_corpus) for i in xrange(start, start + batch_size)]
+  print "Next batch:", batch_idx
+  batch = [train_corpus[i] for i in batch_idx] 
   cost, _ = sess.run([trainer['cost'], trainer['run']],
                      feed_dict={trainer['input_batch']: batch})
-  return cost
+  return cost, start + batch_size
 
 
 def run_training(sess, trainers, annotator, evaluator, pretrain_steps,
@@ -99,46 +102,74 @@ def run_training(sess, trainers, annotator, evaluator, pretrain_steps,
   target_for_step = []
   for target_idx in xrange(len(pretrain_steps)):
     target_for_step += [target_idx] * pretrain_steps[target_idx]
-  while sum(train_steps) > 0:
-    step = random.randint(0, sum(train_steps) - 1)
-    cumulative_steps = 0
-    for target_idx in xrange(len(train_steps)):
-      cumulative_steps += train_steps[target_idx]
-      if step < cumulative_steps:
-        break
-    assert train_steps[target_idx] > 0
-    train_steps[target_idx] -= 1
-    target_for_step.append(target_idx)
-  tf.logging.info('Training schedule defined!')
 
-  best_eval_metric = -1.0
-  tf.logging.info('Starting training...')
-  actual_step = sum(checkpoint_stats[1:])
-  for step, target_idx in enumerate(target_for_step):
-    cost = run_training_step(
-        sess, trainers[target_idx], train_corpus, batch_size)
-    checkpoint_stats[target_idx + 1] += 1
-    if step == 0:
-      tf.logging.info('Initial cost at step 0: %f', cost)
-    if step > 0 and step % 100 == 0:
-      tf.logging.info('cost at step %d: %f', step, cost)
-    if (step + 1) % report_every == 0 or step + 1 == len(target_for_step):
-      tf.logging.info('finished step: %d, actual: %d, cost : %f',
-                      step, actual_step + step, cost)
-      annotated = annotate_dataset(sess, annotator, eval_corpus)
-      summaries = evaluator(eval_gold, annotated)
-      for label, metric in summaries.iteritems():
-        write_summary(summary_writer, label, metric, actual_step + step)
-      eval_metric = summaries['eval_metric']
-      if best_eval_metric < eval_metric:
-        tf.logging.info('Updating best eval to %.2f%%, saving checkpoint.',
-                        eval_metric)
-        best_eval_metric = eval_metric
-        saver.save(sess, checkpoint_filename)
+  with open("/tmp/tf.debug", "w") as debug_file:
+    for var in tf.global_variables():
+      if var.name.find('Adam') == -1:
+        name = var.name
+        if name.endswith(":0"): name = name[0:-2]
+        name = name.replace("-", "_")
+        name = name.replace("/linked_embedding_matrix", "_link_transform")
+        if name.find("lstm/fixed_embedding_matrix") != -1:
+          name = name.replace("lstm/fixed_embedding_matrix", "lstm_embedding")
+          name = name.replace("words", "word")
+          name += ".weight"
+        if name.find("ff/fixed_embedding_matrix") != -1:
+          name = name.replace("ff/fixed_embedding_matrix", "ff_fixed_embedding")
+          name += ".weight"
+        if name == "ff/weights_0": name = "ff_layer.weight"
+        if name == "ff/bias_0": name = "ff_layer.bias"
+        if name == "ff/weights_softmax": name = "ff_softmax.0.weight"
+        if name == "ff/bias_softmax": name = "ff_softmax.0.bias"
+        if name.find("lstm/") != -1 and name.find("softmax") == -1:
+          name = name.replace("lstm/", "lstm._")
+        elif name.find("lstm/") != -1:
+          name = name.replace("lstm/", "lstm.")
+        if name.endswith("_steps"): name = name[0:-6]
+        print >> debug_file, ("Init=%s=%r" % (name, var.eval(sess).tolist()))
 
-        with gfile.GFile('%s.stats' % checkpoint_filename, 'w') as f:
-          stats_str = ','.join([str(x) for x in checkpoint_stats])
-          f.write(stats_str)
-          tf.logging.info('Writing stats: %s', stats_str)
+    while sum(train_steps) > 0:
+      step = random.randint(0, sum(train_steps) - 1)
+      cumulative_steps = 0
+      for target_idx in xrange(len(train_steps)):
+        cumulative_steps += train_steps[target_idx]
+        if step < cumulative_steps:
+          break
+      assert train_steps[target_idx] > 0
+      train_steps[target_idx] -= 1
+      target_for_step.append(target_idx)
+    tf.logging.info('Training schedule defined!')
 
-  tf.logging.info('Finished training!')
+    best_eval_metric = -1.0
+    tf.logging.info('Starting training...')
+    actual_step = sum(checkpoint_stats[1:])
+    batch_start = 0
+    for step, target_idx in enumerate(target_for_step):
+      cost, batch_start = run_training_step(
+          sess, trainers[target_idx], train_corpus, batch_size, batch_start)
+      print >> debug_file, "cost at step", step, "=", cost
+      checkpoint_stats[target_idx + 1] += 1
+      if step == 0:
+        tf.logging.info('Initial cost at step 0: %f', cost)
+      if step > 0 and step % 1 == 0:
+        tf.logging.info('cost at step %d: %f', step, cost)
+      if (step + 1) % report_every == 0 or step + 1 == len(target_for_step):
+        tf.logging.info('finished step: %d, actual: %d, cost : %f',
+                        step, actual_step + step, cost)
+        annotated = annotate_dataset(sess, annotator, eval_corpus)
+        summaries = evaluator(eval_gold, annotated)
+        for label, metric in summaries.iteritems():
+          write_summary(summary_writer, label, metric, actual_step + step)
+        eval_metric = summaries['eval_metric']
+        if best_eval_metric < eval_metric:
+          tf.logging.info('Updating best eval to %.2f%%, saving checkpoint.',
+                          eval_metric)
+          best_eval_metric = eval_metric
+          saver.save(sess, checkpoint_filename)
+
+          with gfile.GFile('%s.stats' % checkpoint_filename, 'w') as f:
+            stats_str = ','.join([str(x) for x in checkpoint_stats])
+            f.write(stats_str)
+            tf.logging.info('Writing stats: %s', stats_str)
+
+    tf.logging.info('Finished training!')
