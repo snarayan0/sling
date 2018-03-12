@@ -23,6 +23,7 @@
 #include "sling/task/frames.h"
 #include "sling/task/task.h"
 #include "sling/util/mutex.h"
+#include "sling/util/unicode.h"
 
 namespace sling {
 namespace nlp {
@@ -34,6 +35,7 @@ class PhraseTableBuilder : public task::FrameProcessor {
     // Get language for names.
     string lang = task->Get("language", "en");
     language_ = commons_->Lookup("/lang/" + lang);
+    remove_spaces_ = task->Get("remove_spaces", false);
 
     // Statistics.
     num_aliases_ = task->GetCounter("aliases");
@@ -66,8 +68,22 @@ class PhraseTableBuilder : public task::FrameProcessor {
         num_aliases_->Increment();
 
         // Compute phrase fingerprint.
-        Text name = alias.GetText(n_name_);
+        string name = alias.GetString(n_name_);
         int count = alias.GetInt(n_alias_count_, 1);
+        if (remove_spaces_) {
+          // Remove spaces and punctuation from name.
+          string normalized;
+          const char *s = name.data();
+          const char *end = s + name.size();
+          while (s < end) {
+            int code = UTF8::Decode(s);
+            if (!Unicode::IsSpace(code) && !Unicode::IsPunctuation(code)) {
+              UTF8::Encode(code, &normalized);
+            }
+            s = UTF8::Next(s);
+          }
+          name = normalized;
+        }
         uint64 fp = tokenizer_.Fingerprint(name);
         if (fp == 1) continue;
 
@@ -187,6 +203,9 @@ class PhraseTableBuilder : public task::FrameProcessor {
 
   // Language for aliases.
   Handle language_;
+
+  // Remove all spaces and punctuation in names.
+  bool remove_spaces_ = false;
 
   // Phrase tokenizer.
   PhraseTokenizer tokenizer_;

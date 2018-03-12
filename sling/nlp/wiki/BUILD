@@ -146,6 +146,7 @@ cc_library(
     "//sling/task",
     "//sling/task:frames",
     "//sling/util:mutex",
+    "//sling/util:unicode",
   ],
   alwayslink = 1,
 )

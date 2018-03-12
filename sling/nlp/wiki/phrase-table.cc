@@ -32,7 +32,7 @@ void PhraseTable::Load(Store *store, const string &filename) {
   entity_table_->resize(entity_index_.size());
   for (int i = 0; i < entity_index_.size(); ++i) {
     const EntityItem *entity = entity_index_.GetEntity(i);
-    Handle handle = store->LookupExisting(entity->id());
+    Handle handle = store->Lookup(entity->id());
     (*entity_table_)[i] = handle;
   }
 }
