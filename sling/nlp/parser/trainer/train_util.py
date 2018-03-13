@@ -909,7 +909,7 @@ class Spec:
     elif feature_spec.name == "unlabeled_roles":
       for e in role_graph:
         if e[2] is not None and e[2] < fl and e[2] >= 0:
-          raw_features.append(e[0] * fl + e[2])
+          raw_features.append(e[2] * fl + e[0])
     elif feature_spec.name == "labeled_roles":
       for e in role_graph:
         if e[2] is not None and e[2] < fl and e[2] >= 0:

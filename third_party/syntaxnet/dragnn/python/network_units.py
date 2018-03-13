@@ -195,7 +195,9 @@ def fixed_feature_lookup(component, state, channel_id, batch_size):
     ids = dragnn_ops.extract_fixed_features(
         state.handle, batch_size, component=component.name,
         channel_id=channel_id, max_num_ids=feature_spec.size)
+    #ids = tf.Print(ids, [ids], "Feature ids for " + feature_spec.name + ":", first_n=100)
     embeddings = embedding_lookup(embedding_matrix, ids, batch_size)
+    #embeddings = tf.Print(embeddings, [embeddings], "Embeddings for " + feature_spec.name + ":", first_n=100)
     return NamedTensor(
         tf.reshape(embeddings, [-1, dim]), feature_spec.name, dim=dim)
 
@@ -221,11 +223,11 @@ def get_input_tensor(fixed_embeddings, linked_embeddings, debug=False):
   # Concat_v2 takes care of optimizing away the concatenation
   # operation in the case when there is exactly one embedding input.
   if debug:
-    msgs = []
-    for e in embeddings:
-      msgs.append(tf.Print(e.tensor, [e.tensor], first_n=3, message="Input tensor " + e.name, summarize=8))
-    with tf.control_dependencies(msgs):
-      return tf.concat([e.tensor for e in embeddings], 1, name="feature_vector")
+    #msgs = []
+    #for e in embeddings:
+    #  msgs.append(tf.Print(e.tensor, [e.tensor], first_n=3, message="Input tensor " + e.name, summarize=8))
+    #with tf.control_dependencies(msgs):
+    return tf.concat([e.tensor for e in embeddings], 1, name="feature_vector")
   else:
     return tf.concat([e.tensor for e in embeddings], 1, name="feature_vector")
 
@@ -340,7 +342,7 @@ def activation_lookup_recurrent(component, state, channel_id, source_array,
         state.handle, batch_size,
         component=component.name, channel_id=channel_id,
         channel_size=feature_spec.size)
-    #idx = tf.Print(idx, [step_idx], message="Link steps for " + name + ":", summarize=32, first_n=3)
+    #idx = tf.Print(idx, [step_idx], message="Link steps for " + name + ":", summarize=32, first_n=30)
     #idx = tf.Print(idx, [idx], message="Link idx for " + name + ":", summarize=32, first_n=3)
 
     # We take the [steps, batch_size, ...] tensor array, gather and concat
@@ -411,7 +413,7 @@ def activation_lookup_other(component, state, channel_id, source_tensor,
         state.handle, batch_size,
         component=component.name, channel_id=channel_id,
         channel_size=feature_spec.size)
-    #idx = tf.Print(idx, [step_idx], message="Link steps for " + name + ":", summarize=32, first_n=3)
+    #idx = tf.Print(idx, [step_idx], message="Link steps for " + name + ":", summarize=32, first_n=30)
     #idx = tf.Print(idx, [idx], message="Link idx for " + name + ":", summarize=32, first_n=3)
 
     # The first element of each tensor array is reserved for an
@@ -933,7 +935,7 @@ class FeedForwardNetwork(NetworkUnitInterface):
     if self._layer_norm_input:
       input_tensor = self._layer_norm_input.normalize(input_tensor)
 
-    input_tensor = tf.Print(input_tensor, [input_tensor], message="FF input", summarize=64)
+    #input_tensor = tf.Print(input_tensor, [input_tensor], message="FF input", summarize=64)
 
     tensors = []
     last_layer = input_tensor
@@ -962,6 +964,7 @@ class FeedForwardNetwork(NetworkUnitInterface):
         acts = tf.nn.bias_add(acts, bias)
 
       last_layer = self._nonlinearity(acts)
+      #last_layer = tf.Print(last_layer, [last_layer], "ff_hidden", first_n=20, summarize=100)
       tensors.append(last_layer)
 
     # Add a convenience alias for the last hidden layer, if any.
@@ -977,7 +980,7 @@ class FeedForwardNetwork(NetworkUnitInterface):
       #last_layer = tf.Print(last_layer, [bias], prefix + name + "=", first_n=1, summarize=100)
 
       logits = tf.matmul(last_layer, softmax) + bias
-      logits = tf.Print(logits, [logits], "logits=", summarize=10)
+      #logits = tf.Print(logits, [logits], "logits=", summarize=10)
       logits = tf.identity(logits, name=self._layers[-1].name)
       tensors.append(logits)
     return tensors
@@ -1178,6 +1181,7 @@ class LSTMNetwork(NetworkUnitInterface):
       ht = tf.nn.dropout(
           ht, self._recurrent_dropout_rate, name='lstm_h_dropout')
 
+    #ht = tf.Print(ht, [ht], self._component.name + " LSTM:", first_n=50)
     h = tf.identity(ht, name='layer_0')
 
     logits = tf.nn.xw_plus_b(ht, tf.get_variable('weights_softmax'),

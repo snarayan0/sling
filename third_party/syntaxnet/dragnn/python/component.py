@@ -282,6 +282,7 @@ class ComponentBuilderBase(object):
     if self.network is None:
       return cost
     regularized_weights = self.network.get_l2_regularized_weights()
+    print self.name, "regularized wts", regularized_weights
     if not regularized_weights:
       return cost
     l2_coeff = self.master.hyperparams.l2_regularization_coefficient
@@ -397,7 +398,7 @@ class DynamicComponentBuilder(ComponentBuilderBase):
             step_cost = tf.reduce_sum(
                 tf.nn.sparse_softmax_cross_entropy_with_logits(
                     labels=tf.cast(gold, tf.int64), logits=logits))
-            step_cost = tf.Print(step_cost, [step_cost], "Stepcost = ")
+            #step_cost = tf.Print(step_cost, [step_cost], "Stepcost = ")
             cost += step_cost
 
             if (self.eligible_for_self_norm and

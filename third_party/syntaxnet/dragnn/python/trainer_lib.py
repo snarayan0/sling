@@ -57,7 +57,7 @@ def run_training_step(sess, trainer, train_corpus, batch_size, start):
   """Runs a single iteration of train_op on a  sampled batch."""
   #batch = random.sample(train_corpus, batch_size)
   batch_idx = [i % len(train_corpus) for i in xrange(start, start + batch_size)]
-  print "Next batch:", batch_idx
+  #print "Next batch:", batch_idx
   batch = [train_corpus[i] for i in batch_idx] 
   cost, _ = sess.run([trainer['cost'], trainer['run']],
                      feed_dict={trainer['input_batch']: batch})
@@ -119,8 +119,8 @@ def run_training(sess, trainers, annotator, evaluator, pretrain_steps,
           name += ".weight"
         if name == "ff/weights_0": name = "ff_layer.weight"
         if name == "ff/bias_0": name = "ff_layer.bias"
-        if name == "ff/weights_softmax": name = "ff_softmax.0.weight"
-        if name == "ff/bias_softmax": name = "ff_softmax.0.bias"
+        if name == "ff/weights_softmax": name = "ff_softmax.weight"
+        if name == "ff/bias_softmax": name = "ff_softmax.bias"
         if name.find("lstm/") != -1 and name.find("softmax") == -1:
           name = name.replace("lstm/", "lstm._")
         elif name.find("lstm/") != -1:
@@ -147,7 +147,7 @@ def run_training(sess, trainers, annotator, evaluator, pretrain_steps,
     for step, target_idx in enumerate(target_for_step):
       cost, batch_start = run_training_step(
           sess, trainers[target_idx], train_corpus, batch_size, batch_start)
-      print >> debug_file, "cost at step", step, "=", cost
+      #print >> debug_file, "cost at step", step, "=", cost
       checkpoint_stats[target_idx + 1] += 1
       if step == 0:
         tf.logging.info('Initial cost at step 0: %f', cost)

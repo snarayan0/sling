@@ -37,6 +37,13 @@ torch.manual_seed(1)
 random.seed(0x31337)
 
 
+def fstr(var):
+  ls = var.data.numpy().tolist()
+  if type(ls[0]) is list: ls = ls[0]
+  ls = ["%.9f" % x for x in ls]
+  return ",".join(ls)
+
+
 class Sempar(nn.Module):
   def __init__(self, spec):
     super(Sempar, self).__init__()
@@ -83,26 +90,25 @@ class Sempar(nn.Module):
       self.add_module('ff_fixed_embedding_' + f.name, embedding)
 
     for f in spec.ff_link_features:
-      transform = nn.Linear(f.activation_size, f.dim, bias=False)
+      transform = nn.Linear(f.activation_size + 1, f.dim, bias=False)
       self.ff_link_transforms.append(transform)
       self.add_module('ff_link_transform_' + f.name, transform)
 
     # Specify vectors for missing link features, one vector per link feature.
-    self.ff_link_missing = nn.ParameterList(
-        [nn.Parameter(torch.randn(1, f.dim)) for f in spec.ff_link_features])
-    self.missing_map = {}
-    for index, f in enumerate(spec.ff_link_features):
-      self.missing_map['ff_link_transform_' + f.name] = self.ff_link_missing[index]
+    # self.ff_link_missing = nn.ParameterList(
+    #    [nn.Parameter(torch.randn(1, f.dim)) for f in spec.ff_link_features])
+    # self.missing_map = {}
+    # for index, f in enumerate(spec.ff_link_features):
+    #  self.missing_map['ff_link_transform_' + f.name] = self.ff_link_missing[index]
 
     # Feedforward unit. This is not a single nn.Sequential model since it does
     # not allow accessing the hidden layer's activation.
     self.ff_layer = nn.Linear(spec.ff_input_dim, spec.ff_hidden_dim, bias=True)
     self.ff_relu = nn.ReLU()
-    self.ff_softmax = nn.Sequential(
-      nn.Linear(spec.ff_hidden_dim, spec.num_actions, bias=True),
-      nn.LogSoftmax()
-    )
-    self.loss_fn = nn.NLLLoss()
+    self.ff_softmax = nn.Linear(spec.ff_hidden_dim, spec.num_actions, bias=True)
+    self.loss_fn = nn.CrossEntropyLoss()
+
+    self.regularized_params = [self.ff_layer.weight]
     print "Modules:", self
 
 
@@ -113,6 +119,7 @@ class Sempar(nn.Module):
       p.data.zero_()
       param_map[name] = p
       unseen[p] = name
+      print "Will try to initialize", name
 
     with open(tf_file, "r") as f:
       for line in f:
@@ -130,16 +137,19 @@ class Sempar(nn.Module):
           t = torch.Tensor(eval(parts[2]))
           if t.dim() == 1: t = t.view(1, -1)
           del unseen[param_map[param]]
-          if param.find("ff_link_transform") != -1:
-            param_map[param].data = t[0:-1,:]  
-            if param.endswith(".weight"): param = param[0:-7]
-            assert param in self.missing_map
-            missing = self.missing_map[param]
-            missing.data = t[-1].view(1, -1)
-            del unseen[missing]
-          else:
-            param_map[param].data = t
-            print "Initialized", param, "with data of shape", param_map[param].data.size()
+          #if param.find("ff_link_transform") != -1:
+            #param_map[param].data = t[0:-1,:]  
+            #param_map[param].data = t
+            #print "Initialized", param, "with data of shape", param_map[param].data.size()
+            #if param.endswith(".weight"): param = param[0:-7]
+            #assert param in self.missing_map
+            #missing = self.missing_map[param]
+            #missing.data = t[-1].view(1, -1)
+            #print "Initialized missing vector for", param, "with data of shape", missing.data.size()
+            #del unseen[missing]
+          #else:
+          param_map[param].data = t
+          print "Initialized", param, "with data of shape", param_map[param].data.size()
 
     print "Didn't see values for:"
     for param, name in unseen.iteritems():
@@ -184,6 +194,7 @@ class Sempar(nn.Module):
     for f, bag in zip(self.spec.ff_fixed_features, self.ff_fixed_embeddings):
       raw_features = self.spec.raw_ff_fixed_features(f, state)
 
+      print "Feature ids for " + f.name + "=", raw_features
       embedded_features = None
       if len(raw_features) == 0:
         embedded_features = Var(torch.zeros(1, f.dim))
@@ -194,13 +205,9 @@ class Sempar(nn.Module):
       if debug: ff_input_parts_debug.append((f, raw_features))
 
     # Link features.
-    link_features = zip(
-        self.spec.ff_link_features, self.ff_link_transforms, \
-        self.ff_link_missing)
-    for f, transform, missing in link_features:
+    link_features = zip(self.spec.ff_link_features, self.ff_link_transforms)
+    for f, transform in link_features:
       link_debug = (f, [])
-      indices = self.spec.translated_ff_link_features(f, state)
-      assert len(indices) == f.num_links
 
       # Figure out where we need to pick the activations from.
       activations = ff_activations
@@ -209,25 +216,39 @@ class Sempar(nn.Module):
       elif f.name == "rl" or f.name == "frame_end_rl":
         activations = rl_lstm_output
 
+      # Get indices into the activations. Recall that missing indices are indicated
+      # via None, and they map to the last row in 'transform'.
+      missing = transform.weight[-1].view(1, -1)
+      transform = transform.weight.narrow(0, 0, transform.weight.size()[0] - 1)
+      indices = self.spec.translated_ff_link_features(f, state)
+      assert len(indices) == f.num_links
+
+      print "Link idx for", f.name, "=", indices
+      chosen_activations = []
       for index in indices:
+        v = None
         if index is not None:
-          assert len(activations) > index, "%r" % index
-          ff_input_parts.append(torch.mm(activations[index], transform.weight))
+          assert index < len(activations), "%r" % index
+          if index < 0: assert -index <= len(activations), "%r" % index
+          v = torch.mm(activations[index], transform)
         else:
-          ff_input_parts.append(missing)
+          v = missing
+        print "Link vector for", f.name, "=", v.data.numpy()
+        ff_input_parts.append(v)
 
       if debug:
         link_debug[1].extend(indices)
         ff_input_parts_debug.append(link_debug)
 
     ff_input = torch.cat(ff_input_parts, 1)
-    print "ff_input", ff_input
+    print "ff_input", fstr(ff_input)
     ff_hidden = torch.mm(ff_input, self.ff_layer.weight) + self.ff_layer.bias
     ff_hidden = self.ff_relu(ff_hidden)
+    print "ff_hidden", fstr(ff_hidden)
     ff_activations.append(ff_hidden)
-    softmax_output = torch.mm(ff_hidden, self.ff_softmax[0].weight) + self.ff_softmax[0].bias
-    print "rawlogits", softmax_output
-    softmax_output = self.ff_softmax[1](softmax_output)
+    softmax_output = torch.mm(ff_hidden, self.ff_softmax.weight) + self.ff_softmax.bias
+
+    print "logits", fstr(softmax_output)
     return softmax_output.view(self.spec.num_actions), ff_input_parts_debug
 
 
@@ -270,13 +291,12 @@ class Sempar(nn.Module):
         ff_output, _ = self._ff_output(lr_out, rl_out, ff_activations, state)
         gold_var = Var(torch.LongTensor([gold_index]))
         step_loss = self.loss_fn(ff_output.view(1, -1), gold_var)
-        print "Stepcost = ", step_loss
+        print "Stepcost = ", fstr(step_loss)
         loss += step_loss
 
         assert state.is_allowed(gold_index), "Disallowed gold action: %r" % gold
         state.advance(gold)
-      loss = loss / len(document.gold)
-      return loss
+      return loss, len(document.gold)
     else:
       if document.size() == 0: return state
 
@@ -395,29 +415,32 @@ class Trainer:
     self.model = sempar
     self.evaluator = evaluator
 
-    self.num_examples = 6
+    self.lr = 0.0005
+    self.num_examples = 20
     self.report_every = 2
-    self.l2_coeff = 0.0000
-    self.batch_size = 1
-    self.gradient_clip = None  # 'None' to disable clipping
+    self.l2_coeff = 1.0
+    self.batch_size = 2
+    self.gradient_clip = 0.02  # 'None' to disable clipping
 
-    self.optimizer = optim.SGD(
-      sempar.parameters(),
-      lr=0.5,
-      momentum=0,
-      dampening=0,
-      weight_decay=0,
-      nesterov=False)
+    #self.optimizer = optim.SGD(
+    #  sempar.parameters(),
+    #  lr=self.lr,
+    #  momentum=0,
+    #  dampening=0,
+    #  weight_decay=0,
+    #  nesterov=False)
 
     num_elements = 0
     for name, p in sempar.named_parameters():
       print name, "requires_grad", p.requires_grad, p.size()
       num_elements += torch.numel(p)
     print "num elements", num_elements
-    #self.optimizer = optim.Adam(
-    #  sempar.parameters(), lr=0.5, weight_decay=self.l2_coeff, \
-    #  betas=(0.01, 0.999), eps=1e-5)
+    self.optimizer = optim.Adam(
+      sempar.parameters(), lr=self.lr, weight_decay=0, \
+      betas=(0.01, 0.999), eps=1e-5)
 
+    
+    self.current_batch_num_transitions = 0
     self.current_batch_size = 0
     self.batch_loss = Var(torch.FloatTensor([0.0]))
     self._reset()
@@ -431,13 +454,15 @@ class Trainer:
 
   def _reset(self):
     self.current_batch_size = 0
+    self.current_batch_num_transitions = 0
     del self.batch_loss
     self.batch_loss = Var(torch.FloatTensor([0.0]))
     self.optimizer.zero_grad()
 
 
   def process(self, example):
-    loss = self.model.forward(example, train=True)
+    loss, num_transitions = self.model.forward(example, train=True)
+    self.current_batch_num_transitions += num_transitions
     self.batch_loss += loss
     self.current_batch_size += 1
     self.count += 1
@@ -447,22 +472,33 @@ class Trainer:
       self.evaluate()
 
 
+  def clip_gradients(self):
+    if self.gradient_clip is not None:
+      for p in self.model.parameters():
+        torch.nn.utils.clip_grad_norm([p], self.gradient_clip)
+
+
   def update(self):
     if self.current_batch_size > 0:
       start = time.time()
-      self.batch_loss /= self.current_batch_size
+      self.batch_loss /= self.current_batch_num_transitions
+
+      l2 = Var(torch.Tensor([0.0]))
+      if self.l2_coeff > 0.0:
+        for p in self.model.regularized_params:
+          l2 += 0.5 * self.l2_coeff * torch.sum(p * p)
+        self.batch_loss += l2
+
       self.batch_loss /= 3.0  # for parity with TF
       value = self.batch_loss.data[0]
       self.batch_loss.backward()
-      if self.gradient_clip is not None:
-        torch.nn.utils.clip_grad_norm(
-            self.model.parameters(), self.gradient_clip)
+      self.clip_gradients()
       self.optimizer.step()
       self._reset()
       end = time.time()
-      print "BatchLoss after (", (self.count / self.batch_size), "batches, ", \
-          self.count, "examples):", value, "(%.1f" % (end - start), "secs)", \
-          now(), mem()
+      print "BatchLoss after", "(%d" % (self.count / self.batch_size), \
+          "batches, ", self.count, "examples):", value, " L2:", fstr(l2 / 3.0), \
+          "(%.1f" % (end - start), "secs)", now(), mem()
 
 
   def evaluate(self):
@@ -526,7 +562,7 @@ def learn(sempar, corpora, evaluator=None, illustrate=False):
 
 
 def replicate():
-  torch.set_printoptions(precision=10)
+  torch.set_printoptions(precision=8)
   path = "/home/grahul/sempar_ontonotes/"
   resources = training.Resources()
   resources.load(commons_path=path + "commons.new",
