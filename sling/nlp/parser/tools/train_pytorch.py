@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import math
 import os
 import random
 import sling
@@ -20,6 +21,7 @@ import time
 import torch
 import torch.autograd as autograd
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 
 sys.path.insert(0, "sling/nlp/parser/trainer")
@@ -65,15 +67,6 @@ class Sempar(nn.Module):
       self.add_module('rl_lstm_embedding_' + f.name, rl_embedding)
       self.rl_embeddings.append(rl_embedding)
 
-      # Initialize with pre-trained word embeddings, if provided.
-      if f.name == "word" and spec.word_embeddings is not None:
-        indices = torch.LongTensor(spec.word_embedding_indices)
-        data = torch.Tensor(spec.word_embeddings)
-        lr_embedding.weight.data.index_copy_(0, indices, data)
-        rl_embedding.weight.data.index_copy_(0, indices, data)
-        print "Overwrote", len(spec.word_embeddings), f.name, \
-            "embedding vectors with pre-trained vectors."
-
     # Two LSTM cells.
     input_dim = spec.lstm_input_dim
     self.lr_lstm = lstm.DragnnLSTMCell(input_dim, spec.lstm_hidden_dim)
@@ -112,7 +105,47 @@ class Sempar(nn.Module):
     print "Modules:", self
 
 
-  def initialize(self, tf_file):
+  def initialize(self):
+    for lr, rl, f in zip(
+      self.lr_embeddings, self.rl_embeddings, self.spec.lstm_features):
+      coeff = 1.0 / math.sqrt(f.dim)
+      lr = lr.weight.data
+      rl = rl.weight.data
+      lr.normal_()
+      lr.mul_(coeff)
+      rl.normal_()
+      rl.mul_(coeff)
+
+      # Initialize with pre-trained word embeddings, if provided.
+      if f.name == "word" and self.spec.word_embeddings is not None:
+        indices = torch.LongTensor(self.spec.word_embedding_indices)
+        data = torch.Tensor(self.spec.word_embeddings)
+        data = F.normalize(data)  # normalize each row
+        lr.index_copy_(0, indices, data)
+        rl.index_copy_(0, indices, data)
+        print "Overwrote", len(self.spec.word_embeddings), f.name, \
+            "embedding vectors with normalized pre-trained vectors."
+
+    for matrix, f in zip(self.ff_fixed_embeddings, self.spec.ff_fixed_features):
+      matrix.weight.data.normal_()
+      matrix.weight.data.mul_(1.0 / math.sqrt(f.dim))
+
+    for matrix, f in zip(self.ff_link_transforms, self.spec.ff_link_features):
+      matrix.weight.data.normal_()
+      matrix.weight.data.mul_(1.0 / math.sqrt(f.dim))
+
+    params = [self.ff_layer.weight, self.ff_softmax.weight]
+    params += [p for p in self.lr_lstm.parameters()]
+    params += [p for p in self.rl_lstm.parameters()]
+    for p in params:
+      p.data.normal_()
+      p.data.mul_(1e-4)
+
+    self.ff_layer.bias.data.fill_(0.2)
+    self.ff_softmax.bias.data.fill_(0.0)
+
+
+  def initialize_from_tf(self, tf_file):
     param_map = {}
     unseen = {}
     for name, p in self.named_parameters():
@@ -137,17 +170,6 @@ class Sempar(nn.Module):
           t = torch.Tensor(eval(parts[2]))
           if t.dim() == 1: t = t.view(1, -1)
           del unseen[param_map[param]]
-          #if param.find("ff_link_transform") != -1:
-            #param_map[param].data = t[0:-1,:]  
-            #param_map[param].data = t
-            #print "Initialized", param, "with data of shape", param_map[param].data.size()
-            #if param.endswith(".weight"): param = param[0:-7]
-            #assert param in self.missing_map
-            #missing = self.missing_map[param]
-            #missing.data = t[-1].view(1, -1)
-            #print "Initialized missing vector for", param, "with data of shape", missing.data.size()
-            #del unseen[missing]
-          #else:
           param_map[param].data = t
           print "Initialized", param, "with data of shape", param_map[param].data.size()
 
@@ -417,10 +439,10 @@ class Trainer:
 
     self.lr = 0.0005
     self.num_examples = 20
-    self.report_every = 2
-    self.l2_coeff = 1.0
-    self.batch_size = 2
-    self.gradient_clip = 0.02  # 'None' to disable clipping
+    self.report_every = 200
+    self.l2_coeff = 1e-4
+    self.batch_size = 8
+    self.gradient_clip = 1.0  # 'None' to disable clipping
 
     #self.optimizer = optim.SGD(
     #  sempar.parameters(),
@@ -570,7 +592,7 @@ def replicate():
                  word_embeddings_path=None) #path + "word2vec-32-embeddings.bin")
 
   sempar = Sempar(resources.spec)
-  sempar.initialize("/tmp/tf.debug")
+  sempar.initialize_from_tf("/tmp/tf.debug")
 
   sempar.spec.words.load("/home/grahul/sempar_ontonotes/out-tf/word-vocab")
   print "Words\n-----\n", sempar.spec.words
@@ -584,6 +606,7 @@ def replicate():
                       resources.schema,
                       tmp_folder)
   trainer = Trainer(sempar, evaluator, None)
+
   resources.train.rewind()
   resources.train.set_loop(True)
   for document in resources.train:
@@ -592,9 +615,8 @@ def replicate():
     trainer.process(document)
 
   # Process the partial batch (if any) at the end, and evaluate one last time.
-  #trainer.update()
-  #trainer.evaluate()
-
+  trainer.update()
+  trainer.evaluate()
 
 
 def trial_run():
@@ -602,11 +624,13 @@ def trial_run():
   resources = training.Resources()
   resources.load(commons_path=path + "commons.new",
                  train_path=path + "train.toy.rec",
-                 word_embeddings_path=None) #path + "word2vec-32-embeddings.bin")
+                 word_embeddings_path=path + "word2vec-32-embeddings.bin")
 
   sempar = Sempar(resources.spec)
+  sempar.initialize()
+  return
 
-  dev_path = path + "dev.toy.rec"
+  dev_path = path + "dev.small.rec"
   tmp_folder = path + "tmp/"
   evaluator = partial(dev_accuracy,
                       resources.commons_path,
@@ -616,4 +640,4 @@ def trial_run():
                       tmp_folder)
   learn(sempar, resources.train, evaluator, illustrate=False)
 
-replicate()
+trial_run()

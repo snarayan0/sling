@@ -148,7 +148,8 @@ class Document:
     return len(self.tokens())
 
 
-# An iterator over a recordio of documents.
+# An iterator over a recordio of documents. It doesn't load all documents into
+# memory at once, and so can't shuffle the corpus.
 class Corpora:
   def __init__(self, recordio, commons, schema, gold=False, loop=False):
     self.filename = recordio
@@ -167,6 +168,7 @@ class Corpora:
 
   def __iter__(self):
     return self
+
 
   def set_loop(self, val):
     self.loop = val
@@ -192,62 +194,62 @@ class Corpora:
 
 # Represents a single transition.
 class Action:
-   SHIFT = 0
-   STOP = 1
-   EVOKE = 2
-   REFER = 3
-   CONNECT = 4
-   ASSIGN = 5
-   EMBED = 6
-   ELABORATE = 7
-   NUM_ACTIONS = 8
+  SHIFT = 0
+  STOP = 1
+  EVOKE = 2
+  REFER = 3
+  CONNECT = 4
+  ASSIGN = 5
+  EMBED = 6
+  ELABORATE = 7
+  NUM_ACTIONS = 8
 
-   def __init__(self, t=None):
-     self.type = None
-     self.length = None
-     self.source = None
-     self.target = None
-     self.role = None
-     self.label = None
+  def __init__(self, t=None):
+    self.type = None
+    self.length = None
+    self.source = None
+    self.target = None
+    self.role = None
+    self.label = None
 
-     if t is not None:
-       assert t < Action.NUM_ACTIONS
-       assert t >= 0
-       self.type = t
-
-
-   def _totuple(self):
-     return (self.type, self.length, self.source, self.target,
-             self.role, self.label)
+    if t is not None:
+      assert t < Action.NUM_ACTIONS
+      assert t >= 0
+      self.type = t
 
 
-   def __hash__(self):
-     return hash(self._totuple())
+  def _totuple(self):
+    return (self.type, self.length, self.source, self.target,
+            self.role, self.label)
 
 
-   def __eq__(self, other):
-     return self._totuple() == other._totuple()
+  def __hash__(self):
+    return hash(self._totuple())
 
 
-   def __repr__(self):
-     names = {
-       Action.SHIFT: "SHIFT",
-       Action.STOP: "STOP",
-       Action.EVOKE: "EVOKE",
-       Action.REFER: "REFER",
-       Action.CONNECT: "CONNECT",
-       Action.ASSIGN: "ASSIGN",
-       Action.EMBED: "EMBED",
-       Action.ELABORATE: "ELABORATE"
-     }
+  def __eq__(self, other):
+    return self._totuple() == other._totuple()
 
-     s = names[self.type]
-     for k, v in sorted(self.__dict__.iteritems()):
-       if v is not None and k != "type":
-         if s != "":
-           s = s + ", "
-         s = s + k + ": " + str(v)
-     return s
+
+  def __repr__(self):
+    names = {
+      Action.SHIFT: "SHIFT",
+      Action.STOP: "STOP",
+      Action.EVOKE: "EVOKE",
+      Action.REFER: "REFER",
+      Action.CONNECT: "CONNECT",
+      Action.ASSIGN: "ASSIGN",
+      Action.EMBED: "EMBED",
+      Action.ELABORATE: "ELABORATE"
+    }
+
+    s = names[self.type]
+    for k, v in sorted(self.__dict__.iteritems()):
+      if v is not None and k != "type":
+        if s != "":
+          s = s + ", "
+        s = s + k + ": " + str(v)
+    return s
 
 
 # Outputs a list of transitions that represent a given document's frame graph.
@@ -332,9 +334,11 @@ class TransitionGenerator:
           edge.inverse = nb_edge
           pending.append(value)
 
+    # Assign a fallback type.
     if info.type is None:
       info.type = self._thing_type
 
+    # Initialize bookkeeping for all frames pointed to by this frame.
     for p in pending:
       self._init_info(p, frame_info, initialized)
 
@@ -575,11 +579,12 @@ class Actions:
 # Stores raw feature indices.
 class Feature:
   def __init__(self):
-    self.indices = []  # list of lists of indices
-    self.has_empty = False
-    self.has_multi = False
+    self.indices = []       # list of lists of indices
+    self.has_empty = False  # are some of the inner lists in 'indices' empty
+    self.has_multi = False  # do some of the inner lists have >1 values
 
 
+  # Adds 'index' to 'indices'. 'index' could be one index or a list of indices.
   def add(self, index):
     if type(index) is int:
       self.indices.append(index)
@@ -611,26 +616,26 @@ class Spec:
     self.words_min_count = 1
     self.suffixes_normalize_digits = False
     self.suffixes_min_count = 1
-    self.suffixes_max_length = 1
+    self.suffixes_max_length = 3
 
     # Action table percentile.
     self.actions_percentile = 99
 
     # Network dimensionalities.
-    self.lstm_hidden_dim = 8
-    self.ff_hidden_dim = 8
+    self.lstm_hidden_dim = 256
+    self.ff_hidden_dim = 128
 
     # Fixed feature dimensionalities.
-    self.words_dim = 2
-    self.suffixes_dim = 2
-    self.fallback_dim = 2  # dimensionality of each fallback feature
-    self.roles_dim = 2
+    self.words_dim = 32
+    self.suffixes_dim = 16
+    self.fallback_dim = 8  # dimensionality of each fallback feature
+    self.roles_dim = 16
 
     # History feature size.
-    self.history_limit = 2
+    self.history_limit = 4
 
     # Frame limit for other link features.
-    self.frame_limit = 2
+    self.frame_limit = 5
 
     # Resources.
     self.commons = None
@@ -655,12 +660,8 @@ class Spec:
     print self.num_actions, "unique gold actions before pruning"
 
     allowed = self.num_actions - sum(self.actions.disallowed)
-    for i in xrange(self.num_actions):
-      print "Action", i, str(self.actions.table[i])
     print "num allowed actions after pruning", allowed
     print len(self.actions.roles), "unique roles in action table"
-    for i in xrange(len(self.actions.roles)):
-      print "Role", i, str(self.actions.roles[i])
 
 
   # Returns suffix(es) of 'word'.
@@ -702,11 +703,7 @@ class Spec:
     self.words.finalize()
     self.suffix.finalize()
     print "Words:", self.words.size(), "items in lexicon, including OOV"
-    for i in xrange(self.words.size()):
-      print "Word", i, self.words.value(i)
     print "Suffix:", self.suffix.size(), "items in lexicon, including OOV"
-    for i in xrange(self.suffix.size()):
-      print "Suffix", i, self.suffix.value(i)
 
     # Prepare action table.
     self._build_action_table(corpora)
@@ -714,12 +711,12 @@ class Spec:
     # LSTM features.
     self.lstm_features = [
       FeatureSpec("word", dim=self.words_dim, vocab=self.words.size()),
-      #FeatureSpec("suffix", dim=self.suffixes_dim, vocab=self.suffix.size()),
-      #FeatureSpec("hyphen", dim=self.fallback_dim, vocab=2),
-      #FeatureSpec("capitalization", dim=self.fallback_dim, vocab=5),
-      #FeatureSpec("punctuation", dim=self.fallback_dim, vocab=3),
-      #FeatureSpec("quote", dim=self.fallback_dim, vocab=4),
-      #FeatureSpec("digit", dim=self.fallback_dim, vocab=3)
+      FeatureSpec("suffix", dim=self.suffixes_dim, vocab=self.suffix.size()),
+      FeatureSpec("hyphen", dim=self.fallback_dim, vocab=2),
+      FeatureSpec("capitalization", dim=self.fallback_dim, vocab=5),
+      FeatureSpec("punctuation", dim=self.fallback_dim, vocab=3),
+      FeatureSpec("quote", dim=self.fallback_dim, vocab=4),
+      FeatureSpec("digit", dim=self.fallback_dim, vocab=3)
     ]
     self.lstm_input_dim = sum([f.dim for f in self.lstm_features])
     print "LSTM input dim", self.lstm_input_dim
@@ -736,13 +733,13 @@ class Spec:
       self.add_ff_fixed("labeled_roles", self.roles_dim, num_roles * fl * fl)
       self.add_ff_fixed("unlabeled_roles", self.roles_dim, fl * fl)
 
-    self.add_ff_link("frame_creation", 2, self.ff_hidden_dim, fl)
-    self.add_ff_link("frame_focus", 2, self.ff_hidden_dim, fl)
-    self.add_ff_link("frame_end_lr", 2, self.lstm_hidden_dim, fl)
-    self.add_ff_link("frame_end_rl", 2, self.lstm_hidden_dim, fl)
-    self.add_ff_link("history", 2, self.ff_hidden_dim, self.history_limit)
-    self.add_ff_link("lr", 2, self.lstm_hidden_dim, 1)
-    self.add_ff_link("rl", 2, self.lstm_hidden_dim, 1)
+    self.add_ff_link("frame_creation", 64, self.ff_hidden_dim, fl)
+    self.add_ff_link("frame_focus", 64, self.ff_hidden_dim, fl)
+    self.add_ff_link("frame_end_lr", 32, self.lstm_hidden_dim, fl)
+    self.add_ff_link("frame_end_rl", 32, self.lstm_hidden_dim, fl)
+    self.add_ff_link("history", 64, self.ff_hidden_dim, self.history_limit)
+    self.add_ff_link("lr", 32, self.lstm_hidden_dim, 1)
+    self.add_ff_link("rl", 32, self.lstm_hidden_dim, 1)
 
     self.ff_input_dim = sum([f.dim for f in self.ff_fixed_features])
     self.ff_input_dim += sum(
@@ -771,7 +768,7 @@ class Spec:
     # Read vectors for known words.
     count = 0
     fmt = "f" * dim
-    vector_size = 4 * dim
+    vector_size = 4 * dim  # here 4 is sizeof(float)
     oov = self.words.oov_index
     for _ in xrange(size):
       word = ""
@@ -780,7 +777,7 @@ class Spec:
         if ch == " ": break
         word += ch
 
-      vector = list(struct.unpack(fmt, f.read(4 * dim)))  # 4 = sizeof(float)
+      vector = list(struct.unpack(fmt, f.read(vector_size)))
       ch = f.read(1)
       assert ch == "\n", "%r" % ch     # end of line expected
 
@@ -820,7 +817,7 @@ class Spec:
         for index, token in enumerate(document.tokens()):
           suffixes = self.get_suffixes(token.text, chars[index])
           ids = [self.suffix.index(s) for s in suffixes]
-          features.add([i for i in ids if i is not None])
+          features.add([i for i in ids if i is not None])  # no OOV in suffixes
       elif f.name == "hyphen":
         for index, token in enumerate(document.tokens()):
           hyphen = any(c == 'Pd' for c in categories[index])
