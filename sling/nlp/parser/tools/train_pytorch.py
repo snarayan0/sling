@@ -26,13 +26,13 @@ import torch.optim as optim
 
 sys.path.insert(0, "sling/nlp/parser/trainer")
 
-import lstm as lstm
 import train_util as training
 from functools import partial
 
 from train_util import mem as mem
 from train_util import now as now
 
+Param = nn.Parameter
 Var = autograd.Variable
 
 torch.manual_seed(1)
@@ -44,6 +44,115 @@ def fstr(var):
   if type(ls[0]) is list: ls = ls[0]
   ls = ["%.9f" % x for x in ls]
   return ",".join(ls)
+
+
+class Projection(nn.Module):
+  def __init__(self, num_in, num_out, bias=True):
+    super(Projection, self).__init__()
+    self.weight = Param(torch.randn(num_in, num_out))
+    self.bias = None
+    if bias:
+      self.bias = Param(torch.randn(1, num_out))
+
+
+  def init(self, weight_stddev, bias_const=None):
+    self.weight.data.normal_()
+    self.weight.data.mul_(weight_stddev)
+    if bias_const is not None and self.bias is not None:
+      self.bias.data.fill_(bias_const)
+
+
+  def forward(self, x):
+    if x.size()[0] != 1: x = x.view(1, -1)
+    out = torch.mm(x, self.weight)
+    if self.bias is not None:
+      out = out + self.bias
+    return out
+
+
+  def __repr__(self):
+    s = self.weight.size()
+    return self.__class__.__name__ + "(in=" + str(s[0]) + \
+        ", out=" + str(s[1]) + ", bias=" + str(self.bias is not None) + ")"
+
+
+class LinkTransform(Projection):
+  def __init__(self, activation_size, dim):
+    super(LinkTransform, self).__init__(activation_size + 1, dim, bias=False)
+
+
+  def forward(self, activation=None):
+    if activation is None:
+      return self.weight[-1].view(1, -1)  # last row
+    else:
+      return torch.mm(activation.view(1, -1), self.weight[0:-1])
+
+
+  def __repr__(self):
+    s = self.weight.size()
+    return self.__class__.__name__ + "(input_activation=" + str(s[0] - 1) + \
+        ", dim=" + str(s[1]) + ", oov_vector=" + str(s[1])+ ")"
+
+
+class DragnnLSTM(nn.Module):
+  def __init__(self, input_dim, hidden_dim):
+    super(DragnnLSTM, self).__init__()
+    self.input_dim = input_dim
+    self.hidden_dim = hidden_dim
+
+    self._x2i = Param(torch.randn(input_dim, hidden_dim))
+    self._h2i = Param(torch.randn(hidden_dim, hidden_dim))
+    self._c2i = Param(torch.randn(hidden_dim, hidden_dim))
+    self._bi = Param(torch.randn(1, hidden_dim))
+
+    self._x2o = Param(torch.randn(input_dim, hidden_dim))
+    self._h2o = Param(torch.randn(hidden_dim, hidden_dim))
+    self._c2o = Param(torch.randn(hidden_dim, hidden_dim))
+    self._bo = Param(torch.randn(1, hidden_dim))
+
+    self._x2c = Param(torch.randn(input_dim, hidden_dim))
+    self._h2c = Param(torch.randn(hidden_dim, hidden_dim))
+    self._bc = Param(torch.randn(1, hidden_dim))
+
+
+  def forward_one_step(self, input_tensor, prev_h, prev_c):
+    i_ait = torch.mm(input_tensor, self._x2i) + \
+        torch.mm(prev_h, self._h2i) + \
+        torch.mm(prev_c, self._c2i) + \
+        self._bi
+    i_it = torch.sigmoid(i_ait)
+    i_ft = 1.0 - i_it
+    i_awt = torch.mm(input_tensor, self._x2c) + \
+        torch.mm(prev_h, self._h2c) + self._bc
+    i_wt = torch.tanh(i_awt)
+    ct = torch.mul(i_it, i_wt) + torch.mul(i_ft, prev_c)
+    i_aot = torch.mm(input_tensor, self._x2o) + \
+        torch.mm(ct, self._c2o) + torch.mm(prev_h, self._h2o) + self._bo
+    i_ot = torch.sigmoid(i_aot)
+    ph_t = torch.tanh(ct)
+    ht = torch.mul(i_ot, ph_t)
+
+    return (ht, ct)
+
+
+  # input_tensors should be (Document Length x LSTM Input Dim).
+  def forward(self, input_tensors):
+    h = Var(torch.zeros(1, self.hidden_dim))
+    c = Var(torch.zeros(1, self.hidden_dim))
+    hidden = []
+    cell = []
+
+    length = input_tensors.size(0)
+    for i in xrange(length):
+      (h, c) = self.forward_one_step(input_tensors[i].view(1, -1), h, c)
+      hidden.append(h)
+      cell.append(c)
+
+    return (hidden, cell)
+
+  def __repr__(self):
+    return self.__class__.__name__ + "(in=" + str(self.input_dim) + \
+        ", hidden=" + str(self.hidden_dim) + ")"
 
 
 class Sempar(nn.Module):
@@ -68,11 +177,8 @@ class Sempar(nn.Module):
       self.rl_embeddings.append(rl_embedding)
 
     # Two LSTM cells.
-    input_dim = spec.lstm_input_dim
-    self.lr_lstm = lstm.DragnnLSTMCell(input_dim, spec.lstm_hidden_dim)
-    self.rl_lstm = lstm.DragnnLSTMCell(input_dim, spec.lstm_hidden_dim)
-    #self.lr_lstm = nn.LSTM(input_dim, spec.lstm_hidden_dim, num_layers=1)
-    #self.rl_lstm = nn.LSTM(input_dim, spec.lstm_hidden_dim, num_layers=1)
+    self.lr_lstm = DragnnLSTM(spec.lstm_input_dim, spec.lstm_hidden_dim)
+    self.rl_lstm = DragnnLSTM(spec.lstm_input_dim, spec.lstm_hidden_dim)
 
     # FF Embeddings and network.
     self.ff_fixed_embeddings = []
@@ -83,22 +189,16 @@ class Sempar(nn.Module):
       self.add_module('ff_fixed_embedding_' + f.name, embedding)
 
     for f in spec.ff_link_features:
-      transform = nn.Linear(f.activation_size + 1, f.dim, bias=False)
+      transform = LinkTransform(f.activation_size, f.dim)
       self.ff_link_transforms.append(transform)
       self.add_module('ff_link_transform_' + f.name, transform)
 
-    # Specify vectors for missing link features, one vector per link feature.
-    # self.ff_link_missing = nn.ParameterList(
-    #    [nn.Parameter(torch.randn(1, f.dim)) for f in spec.ff_link_features])
-    # self.missing_map = {}
-    # for index, f in enumerate(spec.ff_link_features):
-    #  self.missing_map['ff_link_transform_' + f.name] = self.ff_link_missing[index]
-
     # Feedforward unit. This is not a single nn.Sequential model since it does
     # not allow accessing the hidden layer's activation.
-    self.ff_layer = nn.Linear(spec.ff_input_dim, spec.ff_hidden_dim, bias=True)
+    h = spec.ff_hidden_dim
+    self.ff_layer = Projection(spec.ff_input_dim, spec.ff_hidden_dim)
     self.ff_relu = nn.ReLU()
-    self.ff_softmax = nn.Linear(spec.ff_hidden_dim, spec.num_actions, bias=True)
+    self.ff_softmax = Projection(spec.ff_hidden_dim, spec.num_actions)
     self.loss_fn = nn.CrossEntropyLoss()
 
     self.regularized_params = [self.ff_layer.weight]
@@ -130,9 +230,8 @@ class Sempar(nn.Module):
       matrix.weight.data.normal_()
       matrix.weight.data.mul_(1.0 / math.sqrt(f.dim))
 
-    for matrix, f in zip(self.ff_link_transforms, self.spec.ff_link_features):
-      matrix.weight.data.normal_()
-      matrix.weight.data.mul_(1.0 / math.sqrt(f.dim))
+    for t, f in zip(self.ff_link_transforms, self.spec.ff_link_features):
+      t.init(1.0 / math.sqrt(f.dim))
 
     params = [self.ff_layer.weight, self.ff_softmax.weight]
     params += [p for p in self.lr_lstm.parameters()]
@@ -216,7 +315,7 @@ class Sempar(nn.Module):
     for f, bag in zip(self.spec.ff_fixed_features, self.ff_fixed_embeddings):
       raw_features = self.spec.raw_ff_fixed_features(f, state)
 
-      print "Feature ids for " + f.name + "=", raw_features
+      #print "Feature ids for " + f.name + "=", raw_features
       embedded_features = None
       if len(raw_features) == 0:
         embedded_features = Var(torch.zeros(1, f.dim))
@@ -238,39 +337,35 @@ class Sempar(nn.Module):
       elif f.name == "rl" or f.name == "frame_end_rl":
         activations = rl_lstm_output
 
-      # Get indices into the activations. Recall that missing indices are indicated
-      # via None, and they map to the last row in 'transform'.
-      missing = transform.weight[-1].view(1, -1)
-      transform = transform.weight.narrow(0, 0, transform.weight.size()[0] - 1)
+      # Get indices into the activations. Recall that missing indices are
+      # indicated via None, and they map to the last row in 'transform'.
       indices = self.spec.translated_ff_link_features(f, state)
       assert len(indices) == f.num_links
 
-      print "Link idx for", f.name, "=", indices
-      chosen_activations = []
+      #print "Link idx for", f.name, "=", indices
       for index in indices:
-        v = None
+        activation = None
         if index is not None:
           assert index < len(activations), "%r" % index
           if index < 0: assert -index <= len(activations), "%r" % index
-          v = torch.mm(activations[index], transform)
-        else:
-          v = missing
-        print "Link vector for", f.name, "=", v.data.numpy()
-        ff_input_parts.append(v)
+          activation = activations[index]
+        #print "Link vector for", f.name, "=", v.data.numpy()
+        ff_input_parts.append(transform.forward(activation))
 
       if debug:
         link_debug[1].extend(indices)
         ff_input_parts_debug.append(link_debug)
 
-    ff_input = torch.cat(ff_input_parts, 1)
-    print "ff_input", fstr(ff_input)
-    ff_hidden = torch.mm(ff_input, self.ff_layer.weight) + self.ff_layer.bias
+    ff_input = torch.cat(ff_input_parts, 1).view(-1, 1)
+    #print "ff_input", fstr(ff_input)
+    ff_hidden = self.ff_layer(ff_input)
     ff_hidden = self.ff_relu(ff_hidden)
-    print "ff_hidden", fstr(ff_hidden)
+    #print "ff_hidden", fstr(ff_hidden)
     ff_activations.append(ff_hidden)
-    softmax_output = torch.mm(ff_hidden, self.ff_softmax.weight) + self.ff_softmax.bias
+    softmax_output = torch.mm(
+        ff_hidden, self.ff_softmax.weight) + self.ff_softmax.bias
 
-    print "logits", fstr(softmax_output)
+    #print "logits", fstr(softmax_output)
     return softmax_output.view(self.spec.num_actions), ff_input_parts_debug
 
 
@@ -313,7 +408,7 @@ class Sempar(nn.Module):
         ff_output, _ = self._ff_output(lr_out, rl_out, ff_activations, state)
         gold_var = Var(torch.LongTensor([gold_index]))
         step_loss = self.loss_fn(ff_output.view(1, -1), gold_var)
-        print "Stepcost = ", fstr(step_loss)
+        #print "Stepcost = ", fstr(step_loss)
         loss += step_loss
 
         assert state.is_allowed(gold_index), "Disallowed gold action: %r" % gold
@@ -438,8 +533,8 @@ class Trainer:
     self.evaluator = evaluator
 
     self.lr = 0.0005
-    self.num_examples = 20
-    self.report_every = 200
+    self.num_examples = 1000000
+    self.report_every = 8000
     self.l2_coeff = 1e-4
     self.batch_size = 8
     self.gradient_clip = 1.0  # 'None' to disable clipping
@@ -457,11 +552,11 @@ class Trainer:
       print name, "requires_grad", p.requires_grad, p.size()
       num_elements += torch.numel(p)
     print "num elements", num_elements
+
     self.optimizer = optim.Adam(
       sempar.parameters(), lr=self.lr, weight_decay=0, \
       betas=(0.01, 0.999), eps=1e-5)
 
-    
     self.current_batch_num_transitions = 0
     self.current_batch_size = 0
     self.batch_loss = Var(torch.FloatTensor([0.0]))
@@ -519,7 +614,8 @@ class Trainer:
       self._reset()
       end = time.time()
       print "BatchLoss after", "(%d" % (self.count / self.batch_size), \
-          "batches, ", self.count, "examples):", value, " L2:", fstr(l2 / 3.0), \
+          "batches =", self.count, "examples):", value, \
+          " incl. L2=", fstr(l2 / 3.0), \
           "(%.1f" % (end - start), "secs)", now(), mem()
 
 
@@ -556,7 +652,7 @@ def learn(sempar, corpora, evaluator=None, illustrate=False):
   #  sempar.load_state_dict(torch.load(model_file))
   #  print "Loaded model from", model_file
 
-  model_file = "/tmp/pytorch.toymodel"
+  model_file = "/tmp/pytorch.model"
   trainer = Trainer(sempar, evaluator, model_file)
   corpora.rewind()
   corpora.set_loop(True)
@@ -620,17 +716,16 @@ def replicate():
 
 
 def trial_run():
-  path = "/home/grahul/sempar_ontonotes/"
+  path = "/usr/local/google/home/grahul/sempar_ontonotes/"
   resources = training.Resources()
   resources.load(commons_path=path + "commons.new",
-                 train_path=path + "train.toy.rec",
+                 train_path=path + "train_shuffled.rec",
                  word_embeddings_path=path + "word2vec-32-embeddings.bin")
 
   sempar = Sempar(resources.spec)
   sempar.initialize()
-  return
 
-  dev_path = path + "dev.small.rec"
+  dev_path = path + "dev.rec"
   tmp_folder = path + "tmp/"
   evaluator = partial(dev_accuracy,
                       resources.commons_path,
