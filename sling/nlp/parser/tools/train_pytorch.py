@@ -56,6 +56,8 @@ def fstr(var):
   return "[" + ",".join(ls) + "]"
 
 
+# Projects input x to xA + b. This is in contrast to nn.Linear which does Ax + b
+# and has different dimensionalities of the parameters.
 class Projection(nn.Module):
   def __init__(self, num_in, num_out, bias=True):
     super(Projection, self).__init__()
@@ -86,6 +88,7 @@ class Projection(nn.Module):
         ", out=" + str(s[1]) + ", bias=" + str(self.bias is not None) + ")"
 
 
+# Transforms input x to x * A. If x is None, returns a special vector.
 class LinkTransform(Projection):
   def __init__(self, activation_size, dim):
     super(LinkTransform, self).__init__(activation_size + 1, dim, bias=False)
@@ -205,12 +208,12 @@ class Sempar(nn.Module):
 
     # Feedforward unit. This is not a single nn.Sequential model since it does
     # not allow accessing the hidden layer's activation.
-    h = spec.ff_hidden_dim
     self.ff_layer = Projection(spec.ff_input_dim, spec.ff_hidden_dim)
     self.ff_relu = nn.ReLU()
     self.ff_softmax = Projection(spec.ff_hidden_dim, spec.num_actions)
     self.loss_fn = nn.CrossEntropyLoss()
 
+    # Only regularize the FF hidden layer weights.
     self.regularized_params = [self.ff_layer.weight]
     print "Modules:", self
 
@@ -474,7 +477,6 @@ class Sempar(nn.Module):
 
     def index_vars(bldr, feature_spec):
       return bldr.var(name=feature.name, dtype="int32", shape=[1, feature.num])
-
 
     def dump_fixed_feature(feature, bag, bldr, concat_op):
       indices = index_vars(bldr, feature)

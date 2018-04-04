@@ -144,7 +144,9 @@ class Document:
 
 
 # An iterator over a recordio of documents. It doesn't load all documents into
-# memory at once, and so can't shuffle the corpus.
+# memory at once, and so can't shuffle the corpus. It can optionally loop over
+# the corpus, and compute transition sequences for the existing frames in the
+# document.
 class Corpora:
   def __init__(self, recordio, commons, schema, gold=False, loop=False):
     self.filename = recordio
@@ -571,6 +573,7 @@ class Actions:
     self.max_elaborate_source = self._maxvalue(Action.ELABORATE, "source", p)
 
 
+  # Saves the action table as a SLING frame.
   def save(self, commons, filename):
     store = sling.Store(commons)
     table = store.frame({"id": "/table"})
@@ -615,8 +618,8 @@ class Actions:
 class Feature:
   def __init__(self):
     self.indices = []       # list of lists of indices
-    self.has_empty = False  # are some of the inner lists in 'indices' empty
-    self.has_multi = False  # do some of the inner lists have >1 values
+    self.has_empty = False  # are some of the lists in 'indices' empty
+    self.has_multi = False  # do some of the lists have >1 values
 
 
   # Adds 'index' to 'indices'. 'index' could be one index or a list of indices.
@@ -645,6 +648,34 @@ class FeatureSpec:
 
 # Training specification.
 class Spec:
+  # Fallback feature values.
+  NO_HYPHEN = 0
+  HAS_HYPHEN = 1
+  HYPHEN_CARDINALITY = 2
+
+  LOWERCASE = 0
+  UPPERCASE = 1
+  CAPITALIZED = 2
+  INITIAL = 3
+  NON_ALPHABETIC = 4
+  CAPITALIZATION_CARDINALITY = 5
+
+  NO_PUNCTUATION = 0
+  SOME_PUNCTUATION = 1
+  ALL_PUNCTUATION = 2
+  PUNCTUATION_CARDINALITY = 3
+
+  NO_QUOTE = 0
+  OPEN_QUOTE = 1
+  CLOSE_QUOTE = 2
+  UNKNOWN_QUOTE = 3
+  QUOTE_CARDINALITY = 4
+
+  NO_DIGIT = 0
+  SOME_DIGIT = 1
+  ALL_DIGIT = 2
+  DIGIT_CARDINALITY = 3
+
   def __init__(self):
     # Lexicon generation settings.
     self.words_normalize_digits = True
@@ -680,6 +711,12 @@ class Spec:
     self.word_embeddings = None
     self.word_embedding_indices = None
 
+    # To be determined.
+    self.num_actions = None
+    self.lstm_features = []
+    self.ff_fixed_features = []
+    self.ff_link_features = []
+
 
   # Builds an action table from 'corpora'.
   def _build_action_table(self, corpora):
@@ -711,9 +748,12 @@ class Spec:
     return output
 
 
+  # Dumps suffixes in the AffixTable format.
+  # See sling/nlp/document/affix.cc for details.
   def dump_suffixes(self, buf=None):
     if buf is None: buf = bytearray()
 
+    # Writes 'num' in varint encoding to 'b'.
     def writeint(num, b):
       while True:
         part = num & 127
@@ -725,7 +765,7 @@ class Spec:
           break
 
 
-    writeint(1, buf)  # AffixTable::SUFFIX
+    writeint(1, buf)  # 1 = AffixTable::SUFFIX
     writeint(self.suffixes_max_length, buf)
     writeint(self.suffix.size(), buf)
     for i in xrange(self.suffix.size()):
@@ -733,50 +773,57 @@ class Spec:
       assert type(v) is unicode
       v_str = v.encode("utf-8")
 
-      writeint(len(v_str), buf)
-      for x in v_str: buf.append(x)
-      writeint(len(v), buf)
+      writeint(len(v_str), buf)       # number of bytes
+      for x in v_str: buf.append(x)   # the bytes themselves
+      writeint(len(v), buf)           # number of characters
       if len(v) > 1:
         shorter = v[1:]
         shorter_idx = self.suffix.index(shorter)
         assert shorter_idx is not None, shorter
-        writeint(shorter_idx, buf)
+        writeint(shorter_idx, buf)    # id of the suffix one character shorter
 
     return buf
 
+
+  # Adds LSTM feature to the specification.
+  def add_lstm_fixed(self, name, dim, vocab, num=1):
+    self.lstm_features.append(
+        FeatureSpec(name, dim=dim, vocab=vocab, num=num))
+
+  # Adds fixed feature to the specification.
   def add_ff_fixed(self, name, dim, vocab, num):
     self.ff_fixed_features.append(
         FeatureSpec(name, dim=dim, vocab=vocab, num=num))
 
 
+  # Adds link feature to the specification.
   def add_ff_link(self, name, dim, activation, num):
     self.ff_link_features.append(
         FeatureSpec(name, dim=dim, activation=activation, num=num))
 
 
+  # Specifies all fixed and link features.
   def _specify_features(self):
     # LSTM features.
-    self.lstm_features = [
-      FeatureSpec("words", dim=self.words_dim, vocab=self.words.size()),
-    ]
+    self.add_lstm_fixed("words", self.words_dim, self.words.size())
     if self.oov_features:
-      self.lstm_features.extend([
-        FeatureSpec("suffix", dim=self.suffixes_dim, vocab=self.suffix.size(), \
-                    num=self.suffixes_max_length),
-        FeatureSpec("capitalization", dim=self.fallback_dim, vocab=5),
-        FeatureSpec("hyphen", dim=self.fallback_dim, vocab=2),
-        FeatureSpec("punctuation", dim=self.fallback_dim, vocab=3),
-        FeatureSpec("quote", dim=self.fallback_dim, vocab=4),
-        FeatureSpec("digit", dim=self.fallback_dim, vocab=3)
-      ])
+      self.add_lstm_fixed(
+          "suffix", self.suffixes_dim, self.suffix.size(), \
+          self.suffixes_max_length)
+      self.add_lstm_fixed(
+          "capitalization", self.fallback_dim, Spec.CAPITALIZATION_CARDINALITY)
+      self.add_lstm_fixed("hyphen", self.fallback_dim, Spec.HYPHEN_CARDINALITY)
+      self.add_lstm_fixed(
+          "punctuation", self.fallback_dim, Spec.PUNCTUATION_CARDINALITY)
+      self.add_lstm_fixed("quote", self.fallback_dim, Spec.QUOTE_CARDINALITY)
+      self.add_lstm_fixed("digit", self.fallback_dim, Spec.DIGIT_CARDINALITY)
+
     self.lstm_input_dim = sum([f.dim for f in self.lstm_features])
     print "LSTM input dim", self.lstm_input_dim
     assert self.lstm_input_dim > 0
 
     # Feed forward features.
     num_roles = len(self.actions.roles)
-    self.ff_fixed_features = []
-    self.ff_link_features = []
     fl = self.frame_limit
     if num_roles > 0:
       num = 32
@@ -816,7 +863,7 @@ class Spec:
     self.suffix = Lexicon(self.suffixes_normalize_digits, oov_item=None)
 
     corpora.rewind()
-    corpora.set_gold(False)
+    corpora.set_gold(False)   # No need to compute gold transitions yet
     for document in corpora:
       for token in document.tokens():
         word = token.text
@@ -825,7 +872,7 @@ class Spec:
           self.suffix.add(s)
     print "Words:", self.words.size(), "items in lexicon, including OOV"
     print "Suffix:", self.suffix.size(), "items in lexicon"
-    print self.suffix.first_few("Affix ", n=100)
+    print self.suffix.first_few("Affix ", n=20)
 
     # Prepare action table.
     corpora.set_gold(True)
@@ -835,18 +882,7 @@ class Spec:
     self._specify_features()
 
 
-  def initialize_from_tf(self, tf_folder, tf_spec=None):
-    self.commons = sling.Store()
-    self.commons.load(tf_folder + "commons")
-    self.commons.freeze()
-
-    self.words = Lexicon(self.words_normalize_digits)
-    self.suffix = Lexicon(self.suffixes_normalize_digits, oov_item=None)
-    self.words.load(tf_folder + "word-vocab")
-    self.suffix.load(tf_folder + "suffix-table", type="affix")
-    self.actions.load(tf_folder + "table")
-
-
+  # Loads embeddings for words in the lexicon.
   def load_word_embeddings(self, embeddings_file):
     self.word_embeddings = [None] * self.words.size()
     f = open(embeddings_file, 'rb')
@@ -860,7 +896,7 @@ class Spec:
     # Read vectors for known words.
     count = 0
     fmt = "f" * dim
-    vector_size = 4 * dim  # here 4 is sizeof(float)
+    vector_size = 4 * dim  # 4 being sizeof(float)
     oov = self.words.oov_index
     for _ in xrange(size):
       word = ""
@@ -913,21 +949,21 @@ class Spec:
       elif f.name == "hyphen":
         for index, token in enumerate(document.tokens()):
           hyphen = any(c == 'Pd' for c in categories[index])
-          features.add(1 if hyphen else 0)
+          features.add(Spec.HAS_HYPHEN if hyphen else Spec.NO_HYPHEN)
       elif f.name == "capitalization":
         for index, token in enumerate(document.tokens()):
           has_upper = any(c == 'Lu' for c in categories[index])
           has_lower = any(c == 'Ll' for c in categories[index])
 
-          value = 2
+          value = Spec.CAPITALIZED
           if not has_upper and has_lower:
-            value = 0
+            value = Spec.LOWERCASE
           elif has_upper and not has_lower:
-            value = 1
+            value = Spec.UPPERCASE
           elif not has_upper and not has_lower:
-            value = 4
+            value = Spec.NON_ALPHABETIC
           elif index == 0 or token.brk >= 3:  # 3 = SENTENCE_BREAK
-            value = 3
+            value = Spec.INITIAL
           features.add(value)
       elif f.name == "punctuation":
         for index in xrange(len(document.tokens())):
@@ -935,11 +971,11 @@ class Spec:
           some_punct = any(c[0] == 'P' for c in categories[index])
 
           if all_punct:
-            features.add(2)
+            features.add(Spec.ALL_PUNCTUATION)
           elif some_punct:
-            features.add(1)
+            features.add(Spec.SOME_PUNCTUATION)
           else:
-            features.add(0)
+            features.add(Spec.NO_PUNCTUATION)
 
       elif f.name == "digit":
         for index in xrange(len(document.tokens())):
@@ -947,33 +983,33 @@ class Spec:
           some_digit = any(c == 'Nd' for c in categories[index])
 
           if all_digit:
-            features.add(2)
+            features.add(Spec.ALL_DIGIT)
           elif some_digit:
-            features.add(1)
+            features.add(Spec.SOME_DIGIT)
           else:
-            features.add(0)
+            features.add(Spec.NO_DIGIT)
 
       elif f.name == "quote":
         in_quote = False
         for index in xrange(len(document.tokens())):
-          value = 0
+          value = Spec.NO_QUOTE
           for cat, ch in zip(categories[index], chars[index]):
             if cat == 'Pi':
-              value = 1
+              value = Spec.OPEN_QUOTE
             elif cat == 'Pf':
-              value = 2
+              value = Spec.CLOSE_QUOTE
             elif cat == 'Po' and (ch == '\'' or ch == '"'):
-              value = 3
+              value = Spec.UNKNOWN_QUOTE
             elif cat == 'Sk' and ch == '`':
-              value = 3
-          if value != 0:
+              value = Spec.UNKNOWN_QUOTE
+          if value != Spec.NO_QUOTE:
             token = document.tokens()[index]
             if token.text == "``":
-              value = 1
+              value = Spec.OPEN_QUOTE
             elif token.text == "''":
-              value = 2
-            if value == 3:
-              value = 2 if in_quote else 1
+              value = Spec.CLOSE_QUOTE
+            if value == Spec.UNKNOWN_QUOTE:
+              value = Spec.CLOSE_QUOTE if in_quote else Spec.OPEN_QUOTE
               in_quote = not in_quote
           features.add(value)
       else:
@@ -1054,6 +1090,7 @@ class Spec:
     return output
 
 
+  # Dumps resources as flow blobs.
   def dump_flow(self, flow):
     lexicon = flow.blob("lexicon")
     lexicon.type = "dict"
