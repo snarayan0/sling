@@ -226,7 +226,7 @@ def main(unused_argv):
         evaluator, [0], # pretrain_steps
         [FLAGS.train_steps], train_corpus, dev_corpus, dev_corpus,
         FLAGS.batch_size, summary_writer,
-        FLAGS.report_every, builder.saver, checkpoint_path)
+        FLAGS.report_every, builder.saver, checkpoint_path, FLAGS.output_folder)
 
     # Convert model to a Myelin flow.
     if len(FLAGS.flow) != 0:

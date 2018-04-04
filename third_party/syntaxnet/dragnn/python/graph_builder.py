@@ -22,6 +22,7 @@ from tensorflow.python.platform import tf_logging as logging
 
 from dragnn.protos import spec_pb2
 from dragnn.python import component
+from dragnn.python import network_units
 from dragnn.python import dragnn_ops
 from dragnn.python import check
 
@@ -364,6 +365,22 @@ class MasterBuilder(object):
     # Make sure all the side-effectful minimizations ops finish before
     # proceeding.
     with tf.control_dependencies([minimize_op]):
+      handle = tf.identity(handle)
+
+    norm_print_ops = []
+    grad_norm_print_ops = []
+    for grad, var in clipped_gradients:
+      if var is not None and grad is not None:
+        s = "Norm_" + var.name
+        norm = tf.norm(var)
+        norm_print_ops.append(network_units.tfprint(norm, s))
+        norm = tf.norm(grad)
+        grad_norm_print_ops.append(network_units.tfprint(norm, "Grad" + s))
+
+    with tf.control_dependencies(norm_print_ops):
+      handle = tf.identity(handle)
+
+    with tf.control_dependencies([handle] + grad_norm_print_ops):
       handle = tf.identity(handle)
 
     # Restore that subsequent builds don't use average by default.

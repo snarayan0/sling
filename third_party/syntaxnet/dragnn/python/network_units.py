@@ -105,6 +105,14 @@ class NamedTensor(object):
     self.dim = dim
 
 
+def tfprint(data, prefix, summarize=2000):
+  print_debug = False
+  if print_debug:
+    return tf.Print(data, [data], "Debug=" + prefix + "=", summarize=summarize)
+  else:
+    return tf.identity(data)
+
+
 def add_embeddings(channel_id, feature_spec, seed=None):
   """Adds a variable for the embedding of a given fixed feature.
 
@@ -172,6 +180,19 @@ def embedding_lookup(embedding_matrix, ids, batch_size):
   return embeddings
 
 
+def prefix(s, t):
+  if hasattr(s, "name"):
+    s = s.name
+  assert type(s) is str or type(s) == unicode, (s, type(s))
+  if s == "lr_lstm":
+    return "LR_" + t
+  elif s == "rl_lstm":
+    return "RL_" + t
+  else:
+    assert s == "ff", s
+    return "FF_" + t
+
+
 def fixed_feature_lookup(component, state, channel_id, batch_size):
   """Looks up fixed features and passes them through embeddings.
 
@@ -195,14 +216,14 @@ def fixed_feature_lookup(component, state, channel_id, batch_size):
     ids = dragnn_ops.extract_fixed_features(
         state.handle, batch_size, component=component.name,
         channel_id=channel_id, max_num_ids=feature_spec.size)
-    #ids = tf.Print(ids, [ids], "Feature ids for " + feature_spec.name + ":", first_n=100)
+
+    ids = tfprint(ids, prefix(component, "Fixed_Ids_" + feature_spec.name))
     embeddings = embedding_lookup(embedding_matrix, ids, batch_size)
-    #embeddings = tf.Print(embeddings, [embeddings], "Embeddings for " + feature_spec.name + ":", first_n=100)
     return NamedTensor(
         tf.reshape(embeddings, [-1, dim]), feature_spec.name, dim=dim)
 
 
-def get_input_tensor(fixed_embeddings, linked_embeddings, debug=False):
+def get_input_tensor(fixed_embeddings, linked_embeddings):
   """Helper function for constructing an input tensor from all the features.
 
   Args:
@@ -222,14 +243,7 @@ def get_input_tensor(fixed_embeddings, linked_embeddings, debug=False):
 
   # Concat_v2 takes care of optimizing away the concatenation
   # operation in the case when there is exactly one embedding input.
-  if debug:
-    #msgs = []
-    #for e in embeddings:
-    #  msgs.append(tf.Print(e.tensor, [e.tensor], first_n=3, message="Input tensor " + e.name, summarize=8))
-    #with tf.control_dependencies(msgs):
-    return tf.concat([e.tensor for e in embeddings], 1, name="feature_vector")
-  else:
-    return tf.concat([e.tensor for e in embeddings], 1, name="feature_vector")
+  return tf.concat([e.tensor for e in embeddings], 1, name="feature_vector")
 
 
 def get_input_tensor_with_stride(fixed_embeddings, linked_embeddings, stride):
@@ -342,8 +356,7 @@ def activation_lookup_recurrent(component, state, channel_id, source_array,
         state.handle, batch_size,
         component=component.name, channel_id=channel_id,
         channel_size=feature_spec.size)
-    #idx = tf.Print(idx, [step_idx], message="Link steps for " + name + ":", summarize=32, first_n=30)
-    #idx = tf.Print(idx, [idx], message="Link idx for " + name + ":", summarize=32, first_n=3)
+    step_idx = tfprint(step_idx, prefix(component.spec, "Link_Ids_" + name))
 
     # We take the [steps, batch_size, ...] tensor array, gather and concat
     # the steps we might need into a [some_steps*batch_size, ...] tensor,
@@ -367,6 +380,11 @@ def activation_lookup_recurrent(component, state, channel_id, source_array,
     act_block = tf.gather(act_block, flat_idx)
     act_block = tf.reshape(act_block, [-1, source_layer_size])
 
+    block_debug = tf.reshape(act_block, [1, -1])
+    op = tfprint(block_debug, prefix(component, "Link_VecBefore_" + name))
+    with tf.control_dependencies([op]):
+      act_block = tf.identity(act_block)
+
     if feature_spec.embedding_dim != -1:
       embedding_matrix = component.get_variable(
           linked_embeddings_name(feature_spec.name))
@@ -376,6 +394,11 @@ def activation_lookup_recurrent(component, state, channel_id, source_array,
     else:
       # If embedding_dim is -1, just output concatenation of activations.
       dim = feature_spec.size * source_layer_size
+
+    block_debug = tf.reshape(act_block, [1, -1])
+    op = tfprint(block_debug, prefix(component, "Link_VecTransformed_" + name))
+    with tf.control_dependencies([op]):
+      act_block = tf.identity(act_block)
 
     return NamedTensor(
         tf.reshape(act_block, [-1, dim]), feature_spec.name, dim=dim)
@@ -413,14 +436,18 @@ def activation_lookup_other(component, state, channel_id, source_tensor,
         state.handle, batch_size,
         component=component.name, channel_id=channel_id,
         channel_size=feature_spec.size)
-    #idx = tf.Print(idx, [step_idx], message="Link steps for " + name + ":", summarize=32, first_n=30)
-    #idx = tf.Print(idx, [idx], message="Link idx for " + name + ":", summarize=32, first_n=3)
+    step_idx = tfprint(step_idx, prefix(component.spec, "Link_Ids_" + name))
 
     # The first element of each tensor array is reserved for an
     # initialization variable, so we offset all step indices by +1.
     indices = tf.stack([step_idx + 1, idx], axis=1)
     act_block = tf.gather_nd(source_tensor, indices)
     act_block = tf.reshape(act_block, [-1, source_layer_size])
+
+    block_debug = tf.reshape(act_block, [1, -1])
+    op = tfprint(block_debug, prefix(component, "Link_VecBefore_" + name))
+    with tf.control_dependencies([op]):
+      act_block = tf.identity(act_block)
 
     if feature_spec.embedding_dim != -1:
       embedding_matrix = component.get_variable(
@@ -431,6 +458,11 @@ def activation_lookup_other(component, state, channel_id, source_tensor,
     else:
       # If embedding_dim is -1, just output concatenation of activations.
       dim = feature_spec.size * source_layer_size
+
+    block_debug = tf.reshape(act_block, [1, -1])
+    op = tfprint(block_debug, prefix(component, "Link_VecTransformed_" + name))
+    with tf.control_dependencies([op]):
+      act_block = tf.identity(act_block)
 
     return NamedTensor(
         tf.reshape(act_block, [-1, dim]), feature_spec.name, dim=dim)
@@ -935,16 +967,13 @@ class FeedForwardNetwork(NetworkUnitInterface):
     if self._layer_norm_input:
       input_tensor = self._layer_norm_input.normalize(input_tensor)
 
-    #input_tensor = tf.Print(input_tensor, [input_tensor], message="FF input", summarize=64)
+    input_tensor = tfprint(input_tensor, prefix(self._component, "Input"))
 
     tensors = []
     last_layer = input_tensor
-    prefix = self._component.name + "=init="
     for index, hidden_layer_size in enumerate(self._hidden_layer_sizes):
-      #name = self._component.name + ("/weights_%d" % index)
       weights = self._component.get_variable('weights_%d' % index)
       acts = tf.matmul(last_layer, weights)
-      #acts = tf.Print(acts, [weights], prefix + name + "=", first_n=1, summarize=100)
 
       # Note that the first layer was already handled before this loop.
       # TODO(googleuser): Refactor this loop so dropout and layer normalization
@@ -959,12 +988,10 @@ class FeedForwardNetwork(NetworkUnitInterface):
         acts = self._layer_norm_hidden.normalize(acts)
       else:
         bias = self._component.get_variable("bias_%d" % index)
-        #name = self._component.name + ("/bias_%d" % index)
-        #acts = tf.Print(acts, [bias], prefix + name + "=", first_n=1, summarize=100)
         acts = tf.nn.bias_add(acts, bias)
 
       last_layer = self._nonlinearity(acts)
-      #last_layer = tf.Print(last_layer, [last_layer], "ff_hidden", first_n=20, summarize=100)
+      last_layer = tfprint(last_layer, prefix(self._component, "Hidden"))
       tensors.append(last_layer)
 
     # Add a convenience alias for the last hidden layer, if any.
@@ -974,13 +1001,9 @@ class FeedForwardNetwork(NetworkUnitInterface):
     if self._layers[-1].name == 'logits':
       softmax = self._component.get_variable("weights_softmax")
       bias = self._component.get_variable("bias_softmax")
-      #name = self._component.name + "/weights_softmax"
-      #last_layer = tf.Print(last_layer, [softmax], prefix + name + "=", first_n=1, summarize=100)
-      #name = self._component.name + "/bias_softmax"
-      #last_layer = tf.Print(last_layer, [bias], prefix + name + "=", first_n=1, summarize=100)
 
       logits = tf.matmul(last_layer, softmax) + bias
-      #logits = tf.Print(logits, [logits], "logits=", summarize=10)
+      logits = tfprint(logits, prefix(self._component, "Logits"))
       logits = tf.identity(logits, name=self._layers[-1].name)
       tensors.append(logits)
     return tensors
@@ -1103,11 +1126,9 @@ class LSTMNetwork(NetworkUnitInterface):
              during_training,
              stride=None):
     """See base class."""
-    input_tensor = get_input_tensor(fixed_embeddings, linked_embeddings)
     name = self._component.name
-
-    #if name == "lr_lstm":
-    #  input_tensor = tf.Print(input_tensor, [input_tensor], "input=", summarize=4)
+    input_tensor = get_input_tensor(fixed_embeddings, linked_embeddings)
+    input_tensor = tfprint(input_tensor, prefix(name, "Input"))
 
     # context_tensor_arrays[0] is lstm_h
     # context_tensor_arrays[1] is lstm_c
@@ -1127,25 +1148,9 @@ class LSTMNetwork(NetworkUnitInterface):
     h2c = self._component.get_variable('h2c')
     bc = self._component.get_variable('bc')
 
-    #x2i = tf.Print(x2i, [x2i], name + "=init=x2i=", first_n=1, summarize=100)
-    #h2i = tf.Print(h2i, [h2i], name + "=init=h2i=", first_n=1, summarize=100)
-    #c2i = tf.Print(c2i, [c2i], name + "=init=c2i=", first_n=1, summarize=100)
-    #bi = tf.Print(bi, [bi], name + "=init=bi=", first_n=1, summarize=100)
-    #x2o = tf.Print(x2o, [x2o], name + "=init=x2o=", first_n=1, summarize=100)
-    #h2o = tf.Print(h2o, [h2o], name + "=init=h2o=", first_n=1, summarize=100)
-    #c2o = tf.Print(c2o, [c2o], name + "=init=c2o=", first_n=1, summarize=100)
-    #bo = tf.Print(bo, [bo], name + "=init=bo=", first_n=1, summarize=100)
-    #x2c = tf.Print(x2c, [x2c], name + "=init=x2c=", first_n=1, summarize=100)
-    #h2c = tf.Print(h2c, [h2c], name + "=init=h2c=", first_n=1, summarize=100)
-    #bc = tf.Print(bc, [bc], name + "=init=bc=", first_n=1, summarize=100)
-
     # i_h_tm1, i_c_tm1 = h_{t-1}, c_{t-1}
     i_h_tm1 = context_tensor_arrays[0].read(length - 1, name="lstm_h_in")
     i_c_tm1 = context_tensor_arrays[1].read(length - 1, name="lstm_c_in")
-
-    #if name == "lr_lstm":
-    #  i_h_tm1 = tf.Print(i_h_tm1, [i_h_tm1], "prev_hidden=", summarize=10)
-    #  i_c_tm1 = tf.Print(i_c_tm1, [i_c_tm1], "prev_cell=", summarize=10)
 
     # apply dropout according to http://arxiv.org/pdf/1409.2329v5.pdf
     if during_training and self._input_dropout_rate < 1:
@@ -1181,7 +1186,6 @@ class LSTMNetwork(NetworkUnitInterface):
       ht = tf.nn.dropout(
           ht, self._recurrent_dropout_rate, name='lstm_h_dropout')
 
-    #ht = tf.Print(ht, [ht], self._component.name + " LSTM:", first_n=50)
     h = tf.identity(ht, name='layer_0')
 
     logits = tf.nn.xw_plus_b(ht, tf.get_variable('weights_softmax'),
@@ -1191,9 +1195,7 @@ class LSTMNetwork(NetworkUnitInterface):
     # tensors will be consistent with the layers:
     # [lstm_h, lstm_c, layer_0, logits]
 
-    #if name == "lr_lstm":
-    #  ht = tf.Print(ht, [ht], "next_hidden=", summarize=8)
-    #  ct = tf.Print(ct, [ct], "next_cell=", summarize=8)
+    ht = tfprint(ht, prefix(name, "Output"))
 
     tensors = [ht, ct, h, logits]
     return tensors
