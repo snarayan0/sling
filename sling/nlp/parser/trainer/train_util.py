@@ -25,16 +25,13 @@ from datetime import datetime
 
 # Class for computing and serving a lexicon.
 # Usage:
-#   lexicon = Lexicon(min_count=..., normalize_digits=...)
+#   lexicon = Lexicon(normalize_digits=...)
 #   lexicon.add("foo")
 #   lexicon.add("bar")
-#   lexicon.finalize()
 #   ...
 #   index = lexicon.index("foo")
 class Lexicon:
-  def __init__(self, min_count=1, normalize_digits=True, oov_item="<UNKNOWN>"):
-    self.min_count = min_count
-    self.counts = {}
+  def __init__(self, normalize_digits=True, oov_item="<UNKNOWN>"):
     self.normalize_digits = normalize_digits
     self.item_to_index = {}
     self.index_to_item = {}
@@ -42,6 +39,8 @@ class Lexicon:
     if oov_item is not None:
       self.oov_item = oov_item
       self.oov_index = 0   # Don't change this; OOV is always at position 0
+      self.index_to_item[self.oov_index] = self.oov_item
+      self.item_to_index[self.oov_item] = self.oov_index
     else:
       self.oov_item = None
       self.oov_index = None
@@ -67,26 +66,15 @@ class Lexicon:
           assert index == self.oov_index, index
         self.item_to_index[line] = index
         self.index_to_item[index] = line
-        self.counts[line] = self.min_count
         index += 1
 
 
   def add(self, item):
     item = self._key(item)
-    if item not in self.counts:
-      self.counts[item] = 0
-    self.counts[item] = self.counts[item] + 1
-
-
-  def finalize(self):
-    if self.has_oov():
-      self.index_to_item[self.oov_index] = self.oov_item
-      self.item_to_index[self.oov_item] = self.oov_index
-    for item, count in self.counts.iteritems():
-      if count >= self.min_count and item not in self.item_to_index:
-        index = len(self.index_to_item)
-        self.item_to_index[item] = index
-        self.index_to_item[index] = item
+    if item not in self.item_to_index:
+      i = len(self.item_to_index)
+      self.item_to_index[item] = i
+      self.index_to_item[i] = item
 
 
   def size(self):
@@ -107,7 +95,14 @@ class Lexicon:
 
 
   def __str__(self):
-    s = [item for _, item in self.index_to_item.iteritems()]
+    s = [self.index_to_item[i] for i in xrange(self.size())]
+    return "\n".join(s)
+
+
+  def first_few(self, prefix="", n=100):
+    s = []
+    for i in xrange(min(n, self.size())):
+      s.append(prefix + str(i) + " = " + self.index_to_item[i])
     return "\n".join(s)
 
 
@@ -158,8 +153,8 @@ class Corpora:
     self.reader = sling.RecordReader(recordio)
     self.generator = None
     self.loop = loop
-    if gold:
-      self.generator = TransitionGenerator(self.commons)
+    self.generator = None
+    self.set_gold(gold)
 
 
   def __del__(self):
@@ -172,6 +167,13 @@ class Corpora:
 
   def set_loop(self, val):
     self.loop = val
+
+
+  def set_gold(self, gold):
+    if gold and self.generator is None:
+      self.generator = TransitionGenerator(self.commons)
+    elif not gold:
+      self.generator = None
 
 
   def next(self):
@@ -379,8 +381,10 @@ class TransitionGenerator:
       attention.remove(rough.info.handle)
       attention.insert(0, rough.info.handle)
 
+
   def _rough_action(self, type=None):
     return TransitionGenerator.RoughAction(type)
+
 
   def generate(self, document):
     frame_info = {}
@@ -497,7 +501,6 @@ class Actions:
     self.max_refer_target = None
     self.max_embed_target = None
     self.max_elaborate_source = None
-    self.max_action_index = None
     self.stop_index = None
     self.shift_index = None
 
@@ -512,10 +515,6 @@ class Actions:
 
   def size(self):
     return len(self.table)
-
-
-  def max_index(self):
-    return self.max_action_index
 
 
   def add(self, action):
@@ -570,10 +569,46 @@ class Actions:
     self.max_refer_target = self._maxvalue(Action.REFER, "target", p)
     self.max_embed_target = self._maxvalue(Action.EMBED, "target", p)
     self.max_elaborate_source = self._maxvalue(Action.ELABORATE, "source", p)
-    self.max_action_index = max([
-      self.max_connect_source, self.max_connect_target,
-      self.max_refer_target, self.max_embed_target,
-      self.max_elaborate_source])
+
+
+  def save(self, commons, filename):
+    store = sling.Store(commons)
+    table = store.frame({"id": "/table"})
+
+    table["/table/max_span_length"] = self.max_span_length
+    table["/table/max_connect_source"] = self.max_connect_source
+    table["/table/max_connect_target"] = self.max_connect_target
+    table["/table/max_assign_source"] = self.max_assign_source
+    table["/table/max_refer_target"] = self.max_refer_target
+    table["/table/max_embed_target"] = self.max_embed_target
+    table["/table/max_elaborate_source"] = self.max_elaborate_source
+
+    def fill(f, name, val):
+      if val is not None:
+        f["/table/action/" + name] = val
+
+    actions_array = store.array(self.size())
+    for index, action in enumerate(self.table):
+      frame = store.frame({})
+      fill(frame, "type", action.type)
+      fill(frame, "length", action.length)
+      fill(frame, "source", action.source)
+      fill(frame, "target", action.target)
+      fill(frame, "label", action.label)
+      fill(frame, "role", action.role)
+      actions_array[index] = frame
+    table["/table/actions"] = actions_array
+
+    symbols = map(
+        lambda i: "/table/action/" + i,
+        ["type", "length", "source", "target", "role", "label"])
+    table["/table/symbols"] = symbols
+    store.save(filename)
+
+
+  def __str__(self):
+    s = ["Action %d = %s" % (i, a) for i, a in enumerate(self.table)]
+    return "\n".join(s)
 
 
 # Stores raw feature indices.
@@ -600,12 +635,12 @@ class Feature:
 
 # Specification for a single link or fixed feature.
 class FeatureSpec:
-  def __init__(self, name, dim, vocab=None, activation=None, num_links=None):
+  def __init__(self, name, dim, vocab=None, activation=None, num=1):
     self.name = name
     self.dim = dim                     # embedding dimensionality
     self.vocab_size = vocab            # vocabulary size (fixed features only)
     self.activation_size = activation  # activation size (link features only)
-    self.num_links = num_links         # no. of links (link features only)
+    self.num = num                     # no. of links / no. of fixed feature ids
 
 
 # Training specification.
@@ -613,9 +648,7 @@ class Spec:
   def __init__(self):
     # Lexicon generation settings.
     self.words_normalize_digits = True
-    self.words_min_count = 1
     self.suffixes_normalize_digits = False
-    self.suffixes_min_count = 1
     self.suffixes_max_length = 3
 
     # Action table percentile.
@@ -626,6 +659,7 @@ class Spec:
     self.ff_hidden_dim = 128
 
     # Fixed feature dimensionalities.
+    self.oov_features = True
     self.words_dim = 32
     self.suffixes_dim = 16
     self.fallback_dim = 8  # dimensionality of each fallback feature
@@ -639,6 +673,7 @@ class Spec:
 
     # Resources.
     self.commons = None
+    self.commons_path = None
     self.actions = None
     self.words = None
     self.suffix = None
@@ -662,6 +697,7 @@ class Spec:
     allowed = self.num_actions - sum(self.actions.disallowed)
     print "num allowed actions after pruning", allowed
     print len(self.actions.roles), "unique roles in action table"
+    print str(self.actions)
 
 
   # Returns suffix(es) of 'word'.
@@ -669,55 +705,70 @@ class Spec:
     if unicode_chars is None:
       unicode_chars = list(word.decode("utf-8"))
     output = []
-    for length in xrange(1, self.suffixes_max_length + 1):
-      if len(unicode_chars) >= length:
-        output.append("".join(unicode_chars[-length:]))
+    end = min(self.suffixes_max_length, len(unicode_chars))
+    for start in xrange(end, 0, -1):
+      output.append("".join(unicode_chars[-start:]))
     return output
 
 
-  def add_ff_fixed(self, name, dim, vocab):
-    self.ff_fixed_features.append(FeatureSpec(name, dim=dim, vocab=vocab))
+  def dump_suffixes(self, buf=None):
+    if buf is None: buf = bytearray()
+
+    def writeint(num, b):
+      while True:
+        part = num & 127
+        num = num >> 7
+        if num > 0:
+          b.append(part | 128)
+        else:
+          b.append(part)
+          break
 
 
-  def add_ff_link(self, name, dim, activation, num_links):
+    writeint(1, buf)  # AffixTable::SUFFIX
+    writeint(self.suffixes_max_length, buf)
+    writeint(self.suffix.size(), buf)
+    for i in xrange(self.suffix.size()):
+      v = self.suffix.value(i)
+      assert type(v) is unicode
+      v_str = v.encode("utf-8")
+
+      writeint(len(v_str), buf)
+      for x in v_str: buf.append(x)
+      writeint(len(v), buf)
+      if len(v) > 1:
+        shorter = v[1:]
+        shorter_idx = self.suffix.index(shorter)
+        assert shorter_idx is not None, shorter
+        writeint(shorter_idx, buf)
+
+    return buf
+
+  def add_ff_fixed(self, name, dim, vocab, num):
+    self.ff_fixed_features.append(
+        FeatureSpec(name, dim=dim, vocab=vocab, num=num))
+
+
+  def add_ff_link(self, name, dim, activation, num):
     self.ff_link_features.append(
-        FeatureSpec(name, dim=dim, activation=activation, num_links=num_links))
+        FeatureSpec(name, dim=dim, activation=activation, num=num))
 
 
-  # Builds the spec using 'corpora'.
-  def build(self, commons, corpora):
-    # Prepare lexical dictionaries.
-    # For compatibility with DRAGNN, suffixes don't have an OOV item.
-    self.commons = commons
-    self.words = Lexicon(self.words_min_count, self.words_normalize_digits)
-    self.suffix = Lexicon(
-        self.suffixes_min_count, self.suffixes_normalize_digits, oov_item=None)
-
-    corpora.rewind()
-    for document in corpora:
-      for token in document.tokens():
-        word = token.text
-        self.words.add(word)
-        for s in self.get_suffixes(word):
-          self.suffix.add(s)
-    self.words.finalize()
-    self.suffix.finalize()
-    print "Words:", self.words.size(), "items in lexicon, including OOV"
-    print "Suffix:", self.suffix.size(), "items in lexicon, including OOV"
-
-    # Prepare action table.
-    self._build_action_table(corpora)
-
+  def _specify_features(self):
     # LSTM features.
     self.lstm_features = [
-      FeatureSpec("word", dim=self.words_dim, vocab=self.words.size()),
-      FeatureSpec("suffix", dim=self.suffixes_dim, vocab=self.suffix.size()),
-      FeatureSpec("hyphen", dim=self.fallback_dim, vocab=2),
-      FeatureSpec("capitalization", dim=self.fallback_dim, vocab=5),
-      FeatureSpec("punctuation", dim=self.fallback_dim, vocab=3),
-      FeatureSpec("quote", dim=self.fallback_dim, vocab=4),
-      FeatureSpec("digit", dim=self.fallback_dim, vocab=3)
+      FeatureSpec("words", dim=self.words_dim, vocab=self.words.size()),
     ]
+    if self.oov_features:
+      self.lstm_features.extend([
+        FeatureSpec("suffix", dim=self.suffixes_dim, vocab=self.suffix.size(), \
+                    num=self.suffixes_max_length),
+        FeatureSpec("capitalization", dim=self.fallback_dim, vocab=5),
+        FeatureSpec("hyphen", dim=self.fallback_dim, vocab=2),
+        FeatureSpec("punctuation", dim=self.fallback_dim, vocab=3),
+        FeatureSpec("quote", dim=self.fallback_dim, vocab=4),
+        FeatureSpec("digit", dim=self.fallback_dim, vocab=3)
+      ])
     self.lstm_input_dim = sum([f.dim for f in self.lstm_features])
     print "LSTM input dim", self.lstm_input_dim
     assert self.lstm_input_dim > 0
@@ -728,13 +779,15 @@ class Spec:
     self.ff_link_features = []
     fl = self.frame_limit
     if num_roles > 0:
-      self.add_ff_fixed("in_roles", self.roles_dim, num_roles * fl)
-      self.add_ff_fixed("out_roles", self.roles_dim, num_roles * fl)
-      self.add_ff_fixed("labeled_roles", self.roles_dim, num_roles * fl * fl)
-      self.add_ff_fixed("unlabeled_roles", self.roles_dim, fl * fl)
+      num = 32
+      dim = self.roles_dim
+      self.add_ff_fixed("in_roles", dim, num_roles * fl, num)
+      self.add_ff_fixed("out_roles", dim, num_roles * fl, num)
+      self.add_ff_fixed("labeled_roles", dim, num_roles * fl * fl, num)
+      self.add_ff_fixed("unlabeled_roles", dim, fl * fl, num)
 
-    self.add_ff_link("frame_creation", 64, self.ff_hidden_dim, fl)
-    self.add_ff_link("frame_focus", 64, self.ff_hidden_dim, fl)
+    self.add_ff_link("frame_creation_steps", 64, self.ff_hidden_dim, fl)
+    self.add_ff_link("frame_focus_steps", 64, self.ff_hidden_dim, fl)
     self.add_ff_link("frame_end_lr", 32, self.lstm_hidden_dim, fl)
     self.add_ff_link("frame_end_rl", 32, self.lstm_hidden_dim, fl)
     self.add_ff_link("history", 64, self.ff_hidden_dim, self.history_limit)
@@ -743,16 +796,55 @@ class Spec:
 
     self.ff_input_dim = sum([f.dim for f in self.ff_fixed_features])
     self.ff_input_dim += sum(
-        [f.dim * f.num_links for f in self.ff_link_features])
-    print "FF input dim", self.ff_input_dim
+        [f.dim * f.num for f in self.ff_link_features])
+    print "FF_input_dim", self.ff_input_dim
     assert self.ff_input_dim > 0
 
-    # TODO: Write the following:
-    # - Lexicons with their flags (e.g. normalize digits, suffix length)
-    # - Action table.
-    # - Feature specs.
-    #
-    # Does it make sense to write all this in one giant encoded SLING frame?
+
+  # Builds the spec using 'corpora'.
+  def build(self, commons, corpora):
+    if type(commons) is str:
+      self.commons_path = commons
+      commons = sling.Store()
+      commons.load(self.commons_path)
+      commons.freeze()
+
+    # Prepare lexical dictionaries.
+    # For compatibility with DRAGNN, suffixes don't have an OOV item.
+    self.commons = commons
+    self.words = Lexicon(self.words_normalize_digits)
+    self.suffix = Lexicon(self.suffixes_normalize_digits, oov_item=None)
+
+    corpora.rewind()
+    corpora.set_gold(False)
+    for document in corpora:
+      for token in document.tokens():
+        word = token.text
+        self.words.add(word)
+        for s in self.get_suffixes(word):
+          self.suffix.add(s)
+    print "Words:", self.words.size(), "items in lexicon, including OOV"
+    print "Suffix:", self.suffix.size(), "items in lexicon"
+    print self.suffix.first_few("Affix ", n=100)
+
+    # Prepare action table.
+    corpora.set_gold(True)
+    self._build_action_table(corpora)
+
+    # Add feature specs.
+    self._specify_features()
+
+
+  def initialize_from_tf(self, tf_folder, tf_spec=None):
+    self.commons = sling.Store()
+    self.commons.load(tf_folder + "commons")
+    self.commons.freeze()
+
+    self.words = Lexicon(self.words_normalize_digits)
+    self.suffix = Lexicon(self.suffixes_normalize_digits, oov_item=None)
+    self.words.load(tf_folder + "word-vocab")
+    self.suffix.load(tf_folder + "suffix-table", type="affix")
+    self.actions.load(tf_folder + "table")
 
 
   def load_word_embeddings(self, embeddings_file):
@@ -810,7 +902,7 @@ class Spec:
     for f in self.lstm_features:
       features = Feature()
       output.append(features)
-      if f.name == "word":
+      if f.name == "words":
         for token in document.tokens():
           features.add(self.words.index(token.text))
       elif f.name == "suffix":
@@ -884,7 +976,6 @@ class Spec:
               value = 2 if in_quote else 1
               in_quote = not in_quote
           features.add(value)
-
       else:
         raise ValueError("LSTM feature '", f.name, "' not implemented")
     return output
@@ -919,7 +1010,7 @@ class Spec:
 
   def translated_ff_link_features(self, feature_spec, state):
     name = feature_spec.name
-    num = feature_spec.num_links
+    num = feature_spec.num
 
     output = []
     if name == "history":
@@ -949,11 +1040,11 @@ class Spec:
         if end != -1:
           index = -1 - (end - state.begin)
         output.append(index)
-    elif name == "frame_creation":
+    elif name == "frame_creation_steps":
       for i in xrange(num):
         step = state.creation_step(i)
         output.append(None if step == -1 else step)
-    elif name == "frame_focus":
+    elif name == "frame_focus_steps":
       for i in xrange(num):
         step = state.focus_step(i)
         output.append(None if step == -1 else step)
@@ -963,13 +1054,43 @@ class Spec:
     return output
 
 
+  def dump_flow(self, flow):
+    lexicon = flow.blob("lexicon")
+    lexicon.type = "dict"
+    lexicon.add_attr("delimiter", 10)
+    lexicon.add_attr("oov", self.words.oov_index)
+    lexicon.add_attr("normalize_digits", self.words.normalize_digits)
+    lexicon.data = str(self.words) + "\n"
+
+    def read_file(filename):
+      fin = open(filename, "r")
+      data = fin.read()
+      fin.close()
+      return data
+
+    commons = flow.blob("commons")
+    commons.type = "frames"
+    commons.data = read_file(self.commons_path)
+
+    suffix = flow.blob("suffixes")
+    suffix.type = "affix"
+    suffix.data = str(self.dump_suffixes())
+
+    import tempfile
+    actions_file = tempfile.NamedTemporaryFile()
+    self.actions.save(self.commons, actions_file.name)
+    actions_file.flush()
+    actions = flow.blob("actions")
+    actions.type = "frames"
+    actions.data = read_file(actions_file.name)
+
   # Debugging methods.
   #
   # Returns feature strings for LSTM feature indices in 'indices'. All indices
   # are assumed to belong to a single feature whose spec is in 'feature_spec'.
   def lstm_feature_strings(self, feature_spec, indices):
     strings = []
-    if feature_spec.name == "word":
+    if feature_spec.name == "words":
       strings = [self.words.value(index) for index in indices]
     elif feature_spec.name == "suffix":
       strings = [self.suffix.value(index) for index in indices]
@@ -1082,7 +1203,11 @@ class ParserState:
       for role, value in frame.edges:
         role_id = self.spec.actions.role_indices.get(role, None)
         if role_id is not None:
-          self.graph.append((i, role_id, self.index(value)))
+          target = -1
+          if isinstance(value, ParserState.Frame):
+            target = self.index(value)
+            if target == -1 or target >= self.spec.frame_limit: continue
+          self.graph.append((i, role_id, target))
 
 
   def creation_step(self, index):
@@ -1382,6 +1507,7 @@ class Resources:
     print "Pointed to training corpus in", train_path, mem()
 
     self.spec = Spec()
+    self.spec.commons_path = commons_path
     self.spec.build(self.commons, self.train)
     print "After building spec", mem()
 

@@ -32,18 +32,43 @@ from functools import partial
 from train_util import mem as mem
 from train_util import now as now
 
+sys.path.insert(0, "sling/nlp/parser/trainer/flow")
+import nn as flownn
+import flow as flow
+import builder as builder
+
 Param = nn.Parameter
 Var = autograd.Variable
 
 torch.manual_seed(1)
 random.seed(0x31337)
 
+global_debug=False
 
 def fstr(var):
+  if type(var) is tuple and len(var) == 1: var = var[0]
+
+  dim = var.dim()
+  if dim == 1 or (dim == 2 and (var.size(0) == 1 or var.size(1) == 1)):
+    var = var.view(1, -1)
   ls = var.data.numpy().tolist()
   if type(ls[0]) is list: ls = ls[0]
   ls = ["%.9f" % x for x in ls]
-  return ",".join(ls)
+  return "[" + ",".join(ls) + "]"
+
+
+def dprint(prefix, *args):
+  def isvar(a):
+    return isinstance(a, Var) or \
+        type(a) is tuple and len(a) == 1 and type(a[0]) is Var
+
+  if global_debug:
+    ls = [fstr(a) if isvar(a) else repr(a) for a in args]
+    print "Debug=" + prefix + "=" + " ".join(ls)
+
+
+def dsprint(prefix, arg, *args):
+  dprint(prefix + "=" + str(arg), args)
 
 
 class Projection(nn.Module):
@@ -217,7 +242,7 @@ class Sempar(nn.Module):
       rl.mul_(coeff)
 
       # Initialize with pre-trained word embeddings, if provided.
-      if f.name == "word" and self.spec.word_embeddings is not None:
+      if f.name == "words" and self.spec.word_embeddings is not None:
         indices = torch.LongTensor(self.spec.word_embedding_indices)
         data = torch.Tensor(self.spec.word_embeddings)
         data = F.normalize(data)  # normalize each row
@@ -272,13 +297,16 @@ class Sempar(nn.Module):
           param_map[param].data = t
           print "Initialized", param, "with data of shape", param_map[param].data.size()
 
-    print "Didn't see values for:"
-    for param, name in unseen.iteritems():
-      print name
+    if len(unseen) > 0:
+      print "Didn't see values for:"
+      for param, name in unseen.iteritems():
+        print name
+      assert False
 
-    print "Final values:"
-    for name, p in self.named_parameters():
-      print name, "=", p.data
+    if global_debug:
+      print "Final values:"
+      for name, p in self.named_parameters():
+        print name, "=", p.data
 
   def _embedding_lookup(self, embedding_bags, features):
     assert len(embedding_bags) == len(features)
@@ -293,7 +321,7 @@ class Sempar(nn.Module):
         # Other features, e.g. suffixes, may return 0 or >1 ids.
         subvalues = []
         dim = bag.weight.size(1)
-        for i in feature.indices:
+        for index, i in enumerate(feature.indices):
           if type(i) is int:  # one feature id
             subvalues.append(bag(Var(torch.LongTensor([i])).view(1, 1)))
           elif len(i) > 0:    # multiple feature ids
@@ -315,7 +343,7 @@ class Sempar(nn.Module):
     for f, bag in zip(self.spec.ff_fixed_features, self.ff_fixed_embeddings):
       raw_features = self.spec.raw_ff_fixed_features(f, state)
 
-      #print "Feature ids for " + f.name + "=", raw_features
+      dprint("FF_Fixed_Ids_" + f.name, raw_features)
       embedded_features = None
       if len(raw_features) == 0:
         embedded_features = Var(torch.zeros(1, f.dim))
@@ -342,30 +370,50 @@ class Sempar(nn.Module):
       indices = self.spec.translated_ff_link_features(f, state)
       assert len(indices) == f.num_links
 
-      #print "Link idx for", f.name, "=", indices
+      debug_indices = indices
+      offset = 0
+      if f.name == "frame_end_rl" or f.name == "rl":
+        offset = state.document.size()
+      elif f.name == "history":
+        offset = state.steps
+
+      before = []
+      after = []
+      debug_indices = []
+      if global_debug:
+        debug_indices = [-1 if i is None else i + offset for i in indices]
+        dprint("FF_Link_Ids_" + f.name, debug_indices)
       for index in indices:
         activation = None
         if index is not None:
           assert index < len(activations), "%r" % index
           if index < 0: assert -index <= len(activations), "%r" % index
           activation = activations[index]
-        #print "Link vector for", f.name, "=", v.data.numpy()
-        ff_input_parts.append(transform.forward(activation))
+          if global_debug: before.append(activation.view(1, -1))
+        else:
+          if global_debug:
+            before.append(Var(torch.Tensor([0] * f.activation_size)).view(1, -1))
+        vec = transform.forward(activation)
+        if global_debug: after.append(vec)
+        ff_input_parts.append(vec)
 
+      if global_debug:
+        dprint("FF_Link_VecBefore_" + f.name, torch.cat(before, 1))
+        dprint("FF_Link_VecTransformed_" + f.name, torch.cat(after, 1))
       if debug:
         link_debug[1].extend(indices)
         ff_input_parts_debug.append(link_debug)
 
     ff_input = torch.cat(ff_input_parts, 1).view(-1, 1)
-    #print "ff_input", fstr(ff_input)
+    dprint("FF_Input", ff_input)
     ff_hidden = self.ff_layer(ff_input)
     ff_hidden = self.ff_relu(ff_hidden)
-    #print "ff_hidden", fstr(ff_hidden)
+    dprint("FF_Hidden", ff_hidden)
     ff_activations.append(ff_hidden)
     softmax_output = torch.mm(
         ff_hidden, self.ff_softmax.weight) + self.ff_softmax.bias
 
-    #print "logits", fstr(softmax_output)
+    dprint("FF_Logits", softmax_output)
     return softmax_output.view(self.spec.num_actions), ff_input_parts_debug
 
 
@@ -373,19 +421,34 @@ class Sempar(nn.Module):
     raw_features = self.spec.raw_lstm_features(document)
     length = document.size()
 
-    # Each of {lr,rl}_lstm_inputs should have shape (length, lstm_input_dim).
-    lr_lstm_inputs = self._embedding_lookup(self.lr_embeddings, raw_features)
-    rl_lstm_inputs = self._embedding_lookup(self.rl_embeddings, raw_features)
-    assert length == lr_lstm_inputs.size(0)
-    assert length == rl_lstm_inputs.size(0)
+    if global_debug:
+      for fspec, fvalues in zip(self.spec.lstm_features, raw_features):
+        assert len(fvalues.indices) == length, len(fvalues.indices)
+        for indices in fvalues.indices:
+          dprint("LR_Fixed_Ids_" + fspec.name, indices)
+        for indices in reversed(fvalues.indices):
+          dprint("RL_Fixed_Ids_" + fspec.name, indices)
 
-    lr_out, _ = self.lr_lstm.forward(lr_lstm_inputs)
+    # Each of {lr,rl}_inputs should have shape (length, lstm_input_dim).
+    lr_inputs = self._embedding_lookup(self.lr_embeddings, raw_features)
+    rl_inputs = self._embedding_lookup(self.rl_embeddings, raw_features)
+    assert length == lr_inputs.size(0)
+    assert length == rl_inputs.size(0)
+
+    lr_out, _ = self.lr_lstm.forward(lr_inputs)
 
     # Note: Negative strides are not supported, otherwise we would just do:
-    #   rl_input = rl_lstm_inputs[::-1]
+    #   rl_input = rl_inputs[::-1]
     inverse_indices = torch.arange(length - 1, -1, -1).long()
-    rl_input = rl_lstm_inputs[inverse_indices]
-    rl_out, _ = self.rl_lstm.forward(rl_input)
+    rl_inputs = rl_inputs[inverse_indices]
+    rl_out, _ = self.rl_lstm.forward(rl_inputs)
+
+    if global_debug:
+      for i in xrange(length):
+        dsprint("LR_Input", i, lr_inputs[i, :])
+        dsprint("RL_Input", i, rl_inputs[i, :])
+        dsprint("LR_Output", i, lr_out[i])
+        dsprint("RL_Output", i, rl_out[i])
 
     return (lr_out, rl_out, raw_features)
 
@@ -401,16 +464,17 @@ class Sempar(nn.Module):
 
     if train:
       loss = Var(torch.FloatTensor([1]).zero_())
-      for gold in document.gold:
+      for index, gold in enumerate(document.gold):
         gold_index = actions.indices.get(gold, None)
         assert gold_index is not None, "Unknown gold action %r" % gold
 
         ff_output, _ = self._ff_output(lr_out, rl_out, ff_activations, state)
         gold_var = Var(torch.LongTensor([gold_index]))
         step_loss = self.loss_fn(ff_output.view(1, -1), gold_var)
-        #print "Stepcost = ", fstr(step_loss)
+        dsprint("Stepcost", index, step_loss)
         loss += step_loss
 
+        dsprint("Oracle", index, gold)
         assert state.is_allowed(gold_index), "Disallowed gold action: %r" % gold
         state.advance(gold)
       return loss, len(document.gold)
@@ -499,6 +563,122 @@ class Sempar(nn.Module):
       steps += 1
 
 
+  def dump_flow(self, flow_file):
+    fl = flow.Flow()
+    spec = self.spec
+    spec.dump_flow(fl)
+
+    def index_vars(bldr, feature_spec):
+      return bldr.var(name=feature.name, dtype="int32", shape=[1, feature.num])
+
+
+    def dump_fixed_feature(feature, bag, bldr, concat_op):
+      indices = index_vars(bldr, feature)
+      s = bag.weight.size()
+      embedding = bldr.var(name=feature.name + "_embedding", shape=[s[0], s[1]])
+      embedding.data = bag.weight.data.numpy()
+
+      lookup = bldr.rawop(optype="Lookup", name=feature.name + "/Lookup")
+      lookup.add_input(indices)
+      lookup.add_input(embedding)
+      embedded = bldr.var(name=feature.name + "_embedded", shape=[1, s[1]])
+      lookup.add_output(embedded)
+      concat_op.add_input(embedded)
+
+    def finish_concat_op(bldr, op):
+      op.add_attr("N", len(op.inputs))
+      axis = bldr.const(1, "int32")
+      op.add_input(axis)
+
+    # Specify LSTMs and their input features.
+    lr = builder.Builder(fl, "lr_lstm")
+    rl = builder.Builder(fl, "rl_lstm")
+    lr_input = lr.var(name="input", shape=[1, spec.lstm_input_dim])
+    rl_input = rl.var(name="input", shape=[1, spec.lstm_input_dim])
+    lr_out, lr_cnx = flownn.lstm(lr, input=lr_input, size=spec.lstm_hidden_dim)
+    rl_out, rl_cnx = flownn.lstm(rl, input=rl_input, size=spec.lstm_hidden_dim)
+
+    lr_concat_op = lr.rawop(optype="ConcatV2", name="concat")
+    lr_concat_op.add_output(lr_input)
+    rl_concat_op = rl.rawop(optype="ConcatV2", name="concat")
+    rl_concat_op.add_output(rl_input)
+
+    for i, feature in enumerate(spec.lstm_features):
+      dump_fixed_feature(feature, self.lr_embeddings[i], lr, lr_concat_op)
+      dump_fixed_feature(feature, self.rl_embeddings[i], rl, rl_concat_op)
+
+    finish_concat_op(lr, lr_concat_op)
+    finish_concat_op(rl, rl_concat_op)
+
+    # Specify the FF unit.
+    ff = builder.Builder(fl, "ff")
+    ff_input = ff.var(name="input", shape=[1, spec.ff_input_dim])
+    ff_logits, ff_hidden = flownn.feed_forward(
+        ff, \
+        input=ff_input, \
+        layers=[spec.ff_hidden_dim, spec.num_actions], \
+        hidden=0)
+    ff_concat_op = ff.rawop(optype="ConcatV2", name="concat")
+    ff_concat_op.add_output(ff_input)
+
+    def link(bldr, name, dim, cnx):
+      l = bldr.var("link/" + name, shape=[-1, dim])
+      l.ref = True
+      cnx.add(l)
+      return l
+
+    # Add links to the two LSTMs.
+    ff_lr = link(ff, "lr_lstm", spec.lstm_hidden_dim, lr_cnx)
+    ff_rl = link(ff, "rl_lstm", spec.lstm_hidden_dim, rl_cnx)
+    print ff_lr, ff_rl, lr_cnx, rl_cnx
+
+    # Add link and connector for previous steps.
+    ff_cnx = ff.cnx("step", args=[])
+    ff_steps = link(ff, "steps", spec.ff_hidden_dim, ff_cnx)
+
+    for feature, bag in zip(spec.ff_fixed_features, self.ff_fixed_embeddings):
+      dump_fixed_feature(feature, bag, ff, ff_concat_op)
+
+    for feature, lt in zip(spec.ff_link_features, self.ff_link_transforms):
+      indices = index_vars(ff, feature)
+
+      activations = None
+      n = feature.name
+      if n == "frame_end_lr" or n == "lr":
+        activations = ff_lr
+      elif n == "frame_end_rl" or n == "rl":
+        activations = ff_rl
+      elif n in ["frame_creation_steps", "frame_focus_steps", "history"]:
+        activations = ff_steps
+      else:
+        raise ValueError("Unknown feature %r" % n)
+
+      name = feature.name + "/collect"
+      collect = ff.rawop(optype="Collect", name=name)
+      collect.add_input(indices)
+      collect.add_input(activations)
+      collected = ff.var(
+          name=name + ":0", shape=[feature.num, activations.shape[1] + 1])
+      collect.add_output(collected)
+
+      sz = lt.weight.size()
+      print n, sz
+      transform = ff.var(name=feature.name + "/transform", shape=[sz[0], sz[1]])
+      transform.data = lt.weight.data.numpy()
+
+      name = feature.name + "/MatMul"
+      matmul = ff.rawop(optype="MatMul", name=name)
+      matmul.add_input(collected)
+      matmul.add_input(transform)
+      output = ff.var(name + ":0", shape=[feature.num, sz[1]])
+      matmul.add_output(output)
+      ff_concat_op.add_input(output)
+
+    finish_concat_op(ff, ff_concat_op)
+    fl.save(flow_file)
+    print "Wrote flow to", flow_file
+
+
 def dev_accuracy(commons_path, commons, dev_path, schema, tmp_folder, sempar):
   dev = training.Corpora(dev_path, commons, schema, gold=False, loop=False)
   print "Annotating dev documents", now(), mem()
@@ -528,34 +708,50 @@ def dev_accuracy(commons_path, commons, dev_path, schema, tmp_folder, sempar):
 # After every 'batch_size' examples, it computes the gradient and applies
 # it, with optional gradient clipping.
 class Trainer:
-  def __init__(self, sempar, evaluator=None, model_file=None):
+  class Hyperparams:
+    def __init__(self, lr=0.0005, num_examples=1000000, report_every=24000, \
+                 l2_coeff=1e-4, batch_size=8, gradient_clip=1.0, \
+                 optimizer="adam", adam_beta1=0.01, adam_beta2=0.999,
+                 adam_eps=1e-5, moving_avg=True, moving_avg_coeff=0.9999):
+      self.lr = lr
+      self.num_examples = num_examples
+      self.report_every = report_every
+      self.l2_coeff = l2_coeff
+      self.batch_size = batch_size
+      self.gradient_clip = 1.0
+      self.optimizer = optimizer
+      self.adam_beta1 = adam_beta1
+      self.adam_beta2 = adam_beta2
+      self.adam_eps = adam_eps
+      self.moving_avg = moving_avg
+      self.moving_avg_coeff = moving_avg_coeff
+
+
+  def __init__(self, sempar, evaluator=None, model_file=None, \
+               hyperparams=Hyperparams()):
     self.model = sempar
     self.evaluator = evaluator
+    self.hyperparams = hyperparams
 
-    self.lr = 0.0005
-    self.num_examples = 1000000
-    self.report_every = 8000
-    self.l2_coeff = 1e-4
-    self.batch_size = 8
-    self.gradient_clip = 1.0  # 'None' to disable clipping
-
-    #self.optimizer = optim.SGD(
-    #  sempar.parameters(),
-    #  lr=self.lr,
-    #  momentum=0,
-    #  dampening=0,
-    #  weight_decay=0,
-    #  nesterov=False)
+    if hyperparams.optimizer == "sgd":
+      self.optimizer = optim.SGD(
+        sempar.parameters(),
+        lr=self.hyperparams.lr,
+        momentum=0,
+        dampening=0,
+        weight_decay=0,
+        nesterov=False)
+    elif hyperparams.optimizer == "adam":
+      self.optimizer = optim.Adam(
+          sempar.parameters(), lr=hyperparams.lr, weight_decay=0, \
+              betas=(hyperparams.adam_beta1, hyperparams.adam_beta2), \
+              eps=hyperparams.adam_eps)
 
     num_elements = 0
     for name, p in sempar.named_parameters():
       print name, "requires_grad", p.requires_grad, p.size()
       num_elements += torch.numel(p)
     print "num elements", num_elements
-
-    self.optimizer = optim.Adam(
-      sempar.parameters(), lr=self.lr, weight_decay=0, \
-      betas=(0.01, 0.999), eps=1e-5)
 
     self.current_batch_num_transitions = 0
     self.current_batch_size = 0
@@ -567,6 +763,12 @@ class Trainer:
     self.checkpoint_metrics = []
     self.best_metric = None
     self.model_file = model_file
+
+    self.averages = {}
+    if hyperparams.moving_avg:
+      for name, p in sempar.named_parameters():
+        if p.requires_grad:
+          self.averages[name] = p.data.clone()
 
 
   def _reset(self):
@@ -583,16 +785,45 @@ class Trainer:
     self.batch_loss += loss
     self.current_batch_size += 1
     self.count += 1
-    if self.current_batch_size == self.batch_size:
+    if self.current_batch_size == self.hyperparams.batch_size:
       self.update()
-    if self.count % self.report_every == 0:
+    if self.count % self.hyperparams.report_every == 0:
       self.evaluate()
 
 
   def clip_gradients(self):
-    if self.gradient_clip is not None:
+    if self.hyperparams.gradient_clip is not None:
       for p in self.model.parameters():
-        torch.nn.utils.clip_grad_norm([p], self.gradient_clip)
+        torch.nn.utils.clip_grad_norm([p], self.hyperparams.gradient_clip)
+
+
+  def tf_name(self, name):
+    if name == "ff_layer.weight": return "ff/weights_0:0"
+    if name == "ff_layer.bias": return "ff/bias_0:0"
+    if name == "ff_softmax.weight": return "ff/weights_softmax:0"
+    if name == "ff_softmax.bias": return "ff/bias_softmax:0"
+
+    name = name.replace("_lstm._", "_lstm/")
+    name = name.replace("lstm_embedding", "lstm/fixed_embedding_matrix")
+    name = name.replace("_fixed_embedding", "/fixed_embedding_matrix")
+    name = name.replace("_link_transform", "/linked_embedding_matrix")
+    if name.endswith(".weight"): name = name[0:-7]
+    name = name + ":0"
+    return name
+
+
+  def print_norm(self):
+    if global_debug:
+      for name, p in self.model.named_parameters():
+        dprint("Norm_", self.tf_name(name), torch.norm(p).data[0])
+
+
+  def print_grad_norm(self):
+    if global_debug:
+      for name, p in self.model.named_parameters():
+        if p.grad is not None:
+          name = self.tf_name(name)
+          dprint("GradNorm_" + name, torch.norm(p.grad).data[0])
 
 
   def update(self):
@@ -601,9 +832,9 @@ class Trainer:
       self.batch_loss /= self.current_batch_num_transitions
 
       l2 = Var(torch.Tensor([0.0]))
-      if self.l2_coeff > 0.0:
+      if self.hyperparams.l2_coeff > 0.0:
         for p in self.model.regularized_params:
-          l2 += 0.5 * self.l2_coeff * torch.sum(p * p)
+          l2 += 0.5 * self.hyperparams.l2_coeff * torch.sum(p * p)
         self.batch_loss += l2
 
       self.batch_loss /= 3.0  # for parity with TF
@@ -611,33 +842,56 @@ class Trainer:
       self.batch_loss.backward()
       self.clip_gradients()
       self.optimizer.step()
+      self.print_grad_norm()
       self._reset()
       end = time.time()
-      print "BatchLoss after", "(%d" % (self.count / self.batch_size), \
+      num_batches = self.count / self.hyperparams.batch_size
+      self.print_norm()
+
+      if self.hyperparams.moving_avg:
+        decay = self.hyperparams.moving_avg_coeff
+        decay2 = (1.0 + num_batches) / (10.0 + num_batches)
+        if decay > decay2: decay = decay2
+        for name, p in self.model.named_parameters():
+          if p.requires_grad and name in self.averages:
+            diff = (self.averages[name] - p.data) * (1 - decay)
+            self.averages[name].sub_(diff)
+
+      print "BatchLoss after", "(%d" % num_batches, \
           "batches =", self.count, "examples):", value, \
           " incl. L2=", fstr(l2 / 3.0), \
           "(%.1f" % (end - start), "secs)", now(), mem()
+      dsprint("BatchLoss", num_batches, value)
+
+
+  def _swap_with_ema_parameters(self):
+    if not self.hyperparams.moving_avg: return
+    for name, p in self.model.named_parameters():
+      if name in self.averages:
+        tmp = self.averages[name]
+        self.averages[name] = p.data
+        p.data = tmp
 
 
   def evaluate(self):
     if self.evaluator is not None:
-      if self.num_examples == 0 or self.count != self.last_eval_count:
+      if self.count != self.last_eval_count:
+        self._swap_with_ema_parameters()
+
         metrics = self.evaluator(self.model)
         self.checkpoint_metrics.append((self.count, metrics))
         eval_metric = metrics["eval_metric"]
         print "Eval metric after", self.count, ":", eval_metric
 
-        if self.count != self.last_eval_count and self.model_file is not None:
-          current_file = self.model_file + ".latest"
-          torch.save(self.model.state_dict(), current_file)
-          print "Saving latest model at", current_file
+        if self.model_file is not None:
           if self.best_metric is None or self.best_metric < eval_metric:
             self.best_metric = eval_metric
             best_file = self.model_file + ".best"
             torch.save(self.model.state_dict(), best_file)
             print "Updating best model at", best_file
-        self.last_eval_count = self.count
 
+        self.last_eval_count = self.count
+        self._swap_with_ema_parameters()
 
 
 def learn(sempar, corpora, evaluator=None, illustrate=False):
@@ -657,13 +911,15 @@ def learn(sempar, corpora, evaluator=None, illustrate=False):
   corpora.rewind()
   corpora.set_loop(True)
   for document in corpora:
-    if trainer.count > trainer.num_examples:
+    if trainer.count > trainer.hyperparams.num_examples:
       break
     trainer.process(document)
 
   # Process the partial batch (if any) at the end, and evaluate one last time.
   trainer.update()
+  dprint("StartAnnotation")
   trainer.evaluate()
+  dprint("EndAnnotation")
 
   # See how the sample document performs on the trained model.
   if illustrate:
@@ -680,39 +936,61 @@ def learn(sempar, corpora, evaluator=None, illustrate=False):
 
 
 def replicate():
-  torch.set_printoptions(precision=8)
-  path = "/home/grahul/sempar_ontonotes/"
+  torch.set_printoptions(precision=12)
+  path = "/usr/local/google/home/grahul/sempar_ontonotes/"
+  tf_folder = path + "/out-tf/"
   resources = training.Resources()
   resources.load(commons_path=path + "commons.new",
-                 train_path=path + "train.toy.rec",
-                 word_embeddings_path=None) #path + "word2vec-32-embeddings.bin")
+                 train_path=path + "dev5long.rec",
+                 word_embeddings_path=path + "word2vec-32-embeddings.bin")
+                 #word_embeddings_path=None) #path + "word2vec-32-embeddings.bin")
 
   sempar = Sempar(resources.spec)
-  sempar.initialize_from_tf("/tmp/tf.debug")
+  words = sempar.spec.words
+  print "Words before override:", words.size()
+  sempar.initialize_from_tf(tf_folder + "tf.debug")
 
-  sempar.spec.words.load("/home/grahul/sempar_ontonotes/out-tf/word-vocab")
-  print "Words\n-----\n", sempar.spec.words
+  sempar.spec.words.load(tf_folder + "word-vocab")
+  print "Words after override:", words.size()
 
-  dev_path = path + "dev.toy.rec"
-  tmp_folder = path + "tmp/"
+  dev_path = path + "dev5.rec"
+  tmp_folder = path + "pyt/tmp/"
   evaluator = partial(dev_accuracy,
                       resources.commons_path,
                       resources.commons,
                       dev_path,
                       resources.schema,
                       tmp_folder)
-  trainer = Trainer(sempar, evaluator, None)
+  hyperparams = Trainer.Hyperparams(
+      batch_size=1, num_examples=20, lr=0.05, l2_coeff=0.0, \
+          gradient_clip=None, optimizer="sgd")
+  trainer = Trainer(sempar, evaluator, None, hyperparams=hyperparams)
 
   resources.train.rewind()
   resources.train.set_loop(True)
   for document in resources.train:
-    if trainer.count > trainer.num_examples:
+    if trainer.count >= trainer.hyperparams.num_examples:
       break
     trainer.process(document)
 
   # Process the partial batch (if any) at the end, and evaluate one last time.
   trainer.update()
+  global_debug=False
   trainer.evaluate()
+
+
+def flow_test():
+  path = "/usr/local/google/home/grahul/sempar_ontonotes/"
+  resources = training.Resources()
+  resources.load(commons_path=path + "commons.new",
+                 train_path=path + "dev500.rec",
+                 word_embeddings_path=None)
+
+  sempar = Sempar(resources.spec)
+  sempar.initialize()
+
+  flow_file = "/tmp/sempar.pyt.flow"
+  sempar.dump_flow(flow_file)
 
 
 def trial_run():
@@ -735,4 +1013,19 @@ def trial_run():
                       tmp_folder)
   learn(sempar, resources.train, evaluator, illustrate=False)
 
-trial_run()
+
+def affix_test():
+  path = "/usr/local/google/home/grahul/sempar_ontonotes/"
+  resources = training.Resources()
+  resources.load(commons_path=path + "commons.new",
+                 train_path=path + "dev500.rec")
+  print resources.spec.suffix.first_few("Affix ", n=1000)
+  buf = resources.spec.dump_suffixes()
+  with open("/tmp/affixes", "wb") as f:
+    f.write(buf)
+  resources.spec.actions.save(resources.commons, "/tmp/actions")
+
+
+#affix_test()
+#trial_run()
+flow_test()
