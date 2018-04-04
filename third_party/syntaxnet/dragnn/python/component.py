@@ -398,7 +398,6 @@ class DynamicComponentBuilder(ComponentBuilderBase):
             step_cost = tf.reduce_sum(
                 tf.nn.sparse_softmax_cross_entropy_with_logits(
                     labels=tf.cast(gold, tf.int64), logits=logits))
-            step_cost = network_units.tfprint(step_cost, "Stepcost")
             cost += step_cost
 
             if (self.eligible_for_self_norm and

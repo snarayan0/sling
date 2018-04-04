@@ -43,7 +43,6 @@ Var = autograd.Variable
 torch.manual_seed(1)
 random.seed(0x31337)
 
-global_debug=False
 
 def fstr(var):
   if type(var) is tuple and len(var) == 1: var = var[0]
@@ -55,20 +54,6 @@ def fstr(var):
   if type(ls[0]) is list: ls = ls[0]
   ls = ["%.9f" % x for x in ls]
   return "[" + ",".join(ls) + "]"
-
-
-def dprint(prefix, *args):
-  def isvar(a):
-    return isinstance(a, Var) or \
-        type(a) is tuple and len(a) == 1 and type(a[0]) is Var
-
-  if global_debug:
-    ls = [fstr(a) if isvar(a) else repr(a) for a in args]
-    print "Debug=" + prefix + "=" + " ".join(ls)
-
-
-def dsprint(prefix, arg, *args):
-  dprint(prefix + "=" + str(arg), args)
 
 
 class Projection(nn.Module):
@@ -343,7 +328,6 @@ class Sempar(nn.Module):
     for f, bag in zip(self.spec.ff_fixed_features, self.ff_fixed_embeddings):
       raw_features = self.spec.raw_ff_fixed_features(f, state)
 
-      dprint("FF_Fixed_Ids_" + f.name, raw_features)
       embedded_features = None
       if len(raw_features) == 0:
         embedded_features = Var(torch.zeros(1, f.dim))
@@ -368,66 +352,34 @@ class Sempar(nn.Module):
       # Get indices into the activations. Recall that missing indices are
       # indicated via None, and they map to the last row in 'transform'.
       indices = self.spec.translated_ff_link_features(f, state)
-      assert len(indices) == f.num_links
+      assert len(indices) == f.num
 
-      debug_indices = indices
-      offset = 0
-      if f.name == "frame_end_rl" or f.name == "rl":
-        offset = state.document.size()
-      elif f.name == "history":
-        offset = state.steps
-
-      before = []
-      after = []
-      debug_indices = []
-      if global_debug:
-        debug_indices = [-1 if i is None else i + offset for i in indices]
-        dprint("FF_Link_Ids_" + f.name, debug_indices)
       for index in indices:
         activation = None
         if index is not None:
           assert index < len(activations), "%r" % index
           if index < 0: assert -index <= len(activations), "%r" % index
           activation = activations[index]
-          if global_debug: before.append(activation.view(1, -1))
-        else:
-          if global_debug:
-            before.append(Var(torch.Tensor([0] * f.activation_size)).view(1, -1))
         vec = transform.forward(activation)
-        if global_debug: after.append(vec)
         ff_input_parts.append(vec)
 
-      if global_debug:
-        dprint("FF_Link_VecBefore_" + f.name, torch.cat(before, 1))
-        dprint("FF_Link_VecTransformed_" + f.name, torch.cat(after, 1))
       if debug:
         link_debug[1].extend(indices)
         ff_input_parts_debug.append(link_debug)
 
     ff_input = torch.cat(ff_input_parts, 1).view(-1, 1)
-    dprint("FF_Input", ff_input)
     ff_hidden = self.ff_layer(ff_input)
     ff_hidden = self.ff_relu(ff_hidden)
-    dprint("FF_Hidden", ff_hidden)
     ff_activations.append(ff_hidden)
     softmax_output = torch.mm(
         ff_hidden, self.ff_softmax.weight) + self.ff_softmax.bias
 
-    dprint("FF_Logits", softmax_output)
     return softmax_output.view(self.spec.num_actions), ff_input_parts_debug
 
 
   def _lstm_outputs(self, document):
     raw_features = self.spec.raw_lstm_features(document)
     length = document.size()
-
-    if global_debug:
-      for fspec, fvalues in zip(self.spec.lstm_features, raw_features):
-        assert len(fvalues.indices) == length, len(fvalues.indices)
-        for indices in fvalues.indices:
-          dprint("LR_Fixed_Ids_" + fspec.name, indices)
-        for indices in reversed(fvalues.indices):
-          dprint("RL_Fixed_Ids_" + fspec.name, indices)
 
     # Each of {lr,rl}_inputs should have shape (length, lstm_input_dim).
     lr_inputs = self._embedding_lookup(self.lr_embeddings, raw_features)
@@ -442,13 +394,6 @@ class Sempar(nn.Module):
     inverse_indices = torch.arange(length - 1, -1, -1).long()
     rl_inputs = rl_inputs[inverse_indices]
     rl_out, _ = self.rl_lstm.forward(rl_inputs)
-
-    if global_debug:
-      for i in xrange(length):
-        dsprint("LR_Input", i, lr_inputs[i, :])
-        dsprint("RL_Input", i, rl_inputs[i, :])
-        dsprint("LR_Output", i, lr_out[i])
-        dsprint("RL_Output", i, rl_out[i])
 
     return (lr_out, rl_out, raw_features)
 
@@ -471,10 +416,8 @@ class Sempar(nn.Module):
         ff_output, _ = self._ff_output(lr_out, rl_out, ff_activations, state)
         gold_var = Var(torch.LongTensor([gold_index]))
         step_loss = self.loss_fn(ff_output.view(1, -1), gold_var)
-        dsprint("Stepcost", index, step_loss)
         loss += step_loss
 
-        dsprint("Oracle", index, gold)
         assert state.is_allowed(gold_index), "Disallowed gold action: %r" % gold
         state.advance(gold)
       return loss, len(document.gold)
@@ -812,20 +755,6 @@ class Trainer:
     return name
 
 
-  def print_norm(self):
-    if global_debug:
-      for name, p in self.model.named_parameters():
-        dprint("Norm_", self.tf_name(name), torch.norm(p).data[0])
-
-
-  def print_grad_norm(self):
-    if global_debug:
-      for name, p in self.model.named_parameters():
-        if p.grad is not None:
-          name = self.tf_name(name)
-          dprint("GradNorm_" + name, torch.norm(p.grad).data[0])
-
-
   def update(self):
     if self.current_batch_size > 0:
       start = time.time()
@@ -842,11 +771,9 @@ class Trainer:
       self.batch_loss.backward()
       self.clip_gradients()
       self.optimizer.step()
-      self.print_grad_norm()
       self._reset()
       end = time.time()
       num_batches = self.count / self.hyperparams.batch_size
-      self.print_norm()
 
       if self.hyperparams.moving_avg:
         decay = self.hyperparams.moving_avg_coeff
@@ -861,7 +788,6 @@ class Trainer:
           "batches =", self.count, "examples):", value, \
           " incl. L2=", fstr(l2 / 3.0), \
           "(%.1f" % (end - start), "secs)", now(), mem()
-      dsprint("BatchLoss", num_batches, value)
 
 
   def _swap_with_ema_parameters(self):
@@ -917,9 +843,7 @@ def learn(sempar, corpora, evaluator=None, illustrate=False):
 
   # Process the partial batch (if any) at the end, and evaluate one last time.
   trainer.update()
-  dprint("StartAnnotation")
   trainer.evaluate()
-  dprint("EndAnnotation")
 
   # See how the sample document performs on the trained model.
   if illustrate:
@@ -997,13 +921,13 @@ def trial_run():
   path = "/usr/local/google/home/grahul/sempar_ontonotes/"
   resources = training.Resources()
   resources.load(commons_path=path + "commons.new",
-                 train_path=path + "train_shuffled.rec",
+                 train_path=path + "dev500.rec",
                  word_embeddings_path=path + "word2vec-32-embeddings.bin")
 
   sempar = Sempar(resources.spec)
   sempar.initialize()
 
-  dev_path = path + "dev.rec"
+  dev_path = path + "dev500.rec"
   tmp_folder = path + "tmp/"
   evaluator = partial(dev_accuracy,
                       resources.commons_path,
@@ -1014,18 +938,5 @@ def trial_run():
   learn(sempar, resources.train, evaluator, illustrate=False)
 
 
-def affix_test():
-  path = "/usr/local/google/home/grahul/sempar_ontonotes/"
-  resources = training.Resources()
-  resources.load(commons_path=path + "commons.new",
-                 train_path=path + "dev500.rec")
-  print resources.spec.suffix.first_few("Affix ", n=1000)
-  buf = resources.spec.dump_suffixes()
-  with open("/tmp/affixes", "wb") as f:
-    f.write(buf)
-  resources.spec.actions.save(resources.commons, "/tmp/actions")
-
-
-#affix_test()
-#trial_run()
-flow_test()
+trial_run()
+#flow_test()

@@ -105,14 +105,6 @@ class NamedTensor(object):
     self.dim = dim
 
 
-def tfprint(data, prefix, summarize=2000):
-  print_debug = False
-  if print_debug:
-    return tf.Print(data, [data], "Debug=" + prefix + "=", summarize=summarize)
-  else:
-    return tf.identity(data)
-
-
 def add_embeddings(channel_id, feature_spec, seed=None):
   """Adds a variable for the embedding of a given fixed feature.
 
@@ -180,19 +172,6 @@ def embedding_lookup(embedding_matrix, ids, batch_size):
   return embeddings
 
 
-def prefix(s, t):
-  if hasattr(s, "name"):
-    s = s.name
-  assert type(s) is str or type(s) == unicode, (s, type(s))
-  if s == "lr_lstm":
-    return "LR_" + t
-  elif s == "rl_lstm":
-    return "RL_" + t
-  else:
-    assert s == "ff", s
-    return "FF_" + t
-
-
 def fixed_feature_lookup(component, state, channel_id, batch_size):
   """Looks up fixed features and passes them through embeddings.
 
@@ -217,7 +196,6 @@ def fixed_feature_lookup(component, state, channel_id, batch_size):
         state.handle, batch_size, component=component.name,
         channel_id=channel_id, max_num_ids=feature_spec.size)
 
-    ids = tfprint(ids, prefix(component, "Fixed_Ids_" + feature_spec.name))
     embeddings = embedding_lookup(embedding_matrix, ids, batch_size)
     return NamedTensor(
         tf.reshape(embeddings, [-1, dim]), feature_spec.name, dim=dim)
@@ -356,7 +334,6 @@ def activation_lookup_recurrent(component, state, channel_id, source_array,
         state.handle, batch_size,
         component=component.name, channel_id=channel_id,
         channel_size=feature_spec.size)
-    step_idx = tfprint(step_idx, prefix(component.spec, "Link_Ids_" + name))
 
     # We take the [steps, batch_size, ...] tensor array, gather and concat
     # the steps we might need into a [some_steps*batch_size, ...] tensor,
@@ -380,11 +357,6 @@ def activation_lookup_recurrent(component, state, channel_id, source_array,
     act_block = tf.gather(act_block, flat_idx)
     act_block = tf.reshape(act_block, [-1, source_layer_size])
 
-    block_debug = tf.reshape(act_block, [1, -1])
-    op = tfprint(block_debug, prefix(component, "Link_VecBefore_" + name))
-    with tf.control_dependencies([op]):
-      act_block = tf.identity(act_block)
-
     if feature_spec.embedding_dim != -1:
       embedding_matrix = component.get_variable(
           linked_embeddings_name(feature_spec.name))
@@ -394,11 +366,6 @@ def activation_lookup_recurrent(component, state, channel_id, source_array,
     else:
       # If embedding_dim is -1, just output concatenation of activations.
       dim = feature_spec.size * source_layer_size
-
-    block_debug = tf.reshape(act_block, [1, -1])
-    op = tfprint(block_debug, prefix(component, "Link_VecTransformed_" + name))
-    with tf.control_dependencies([op]):
-      act_block = tf.identity(act_block)
 
     return NamedTensor(
         tf.reshape(act_block, [-1, dim]), feature_spec.name, dim=dim)
@@ -436,18 +403,12 @@ def activation_lookup_other(component, state, channel_id, source_tensor,
         state.handle, batch_size,
         component=component.name, channel_id=channel_id,
         channel_size=feature_spec.size)
-    step_idx = tfprint(step_idx, prefix(component.spec, "Link_Ids_" + name))
 
     # The first element of each tensor array is reserved for an
     # initialization variable, so we offset all step indices by +1.
     indices = tf.stack([step_idx + 1, idx], axis=1)
     act_block = tf.gather_nd(source_tensor, indices)
     act_block = tf.reshape(act_block, [-1, source_layer_size])
-
-    block_debug = tf.reshape(act_block, [1, -1])
-    op = tfprint(block_debug, prefix(component, "Link_VecBefore_" + name))
-    with tf.control_dependencies([op]):
-      act_block = tf.identity(act_block)
 
     if feature_spec.embedding_dim != -1:
       embedding_matrix = component.get_variable(
@@ -458,11 +419,6 @@ def activation_lookup_other(component, state, channel_id, source_tensor,
     else:
       # If embedding_dim is -1, just output concatenation of activations.
       dim = feature_spec.size * source_layer_size
-
-    block_debug = tf.reshape(act_block, [1, -1])
-    op = tfprint(block_debug, prefix(component, "Link_VecTransformed_" + name))
-    with tf.control_dependencies([op]):
-      act_block = tf.identity(act_block)
 
     return NamedTensor(
         tf.reshape(act_block, [-1, dim]), feature_spec.name, dim=dim)
@@ -967,8 +923,6 @@ class FeedForwardNetwork(NetworkUnitInterface):
     if self._layer_norm_input:
       input_tensor = self._layer_norm_input.normalize(input_tensor)
 
-    input_tensor = tfprint(input_tensor, prefix(self._component, "Input"))
-
     tensors = []
     last_layer = input_tensor
     for index, hidden_layer_size in enumerate(self._hidden_layer_sizes):
@@ -991,7 +945,6 @@ class FeedForwardNetwork(NetworkUnitInterface):
         acts = tf.nn.bias_add(acts, bias)
 
       last_layer = self._nonlinearity(acts)
-      last_layer = tfprint(last_layer, prefix(self._component, "Hidden"))
       tensors.append(last_layer)
 
     # Add a convenience alias for the last hidden layer, if any.
@@ -1003,7 +956,6 @@ class FeedForwardNetwork(NetworkUnitInterface):
       bias = self._component.get_variable("bias_softmax")
 
       logits = tf.matmul(last_layer, softmax) + bias
-      logits = tfprint(logits, prefix(self._component, "Logits"))
       logits = tf.identity(logits, name=self._layers[-1].name)
       tensors.append(logits)
     return tensors
@@ -1128,7 +1080,6 @@ class LSTMNetwork(NetworkUnitInterface):
     """See base class."""
     name = self._component.name
     input_tensor = get_input_tensor(fixed_embeddings, linked_embeddings)
-    input_tensor = tfprint(input_tensor, prefix(name, "Input"))
 
     # context_tensor_arrays[0] is lstm_h
     # context_tensor_arrays[1] is lstm_c
@@ -1194,8 +1145,6 @@ class LSTMNetwork(NetworkUnitInterface):
     logits = tf.identity(logits, name='logits')
     # tensors will be consistent with the layers:
     # [lstm_h, lstm_c, layer_0, logits]
-
-    ht = tfprint(ht, prefix(name, "Output"))
 
     tensors = [ht, ct, h, logits]
     return tensors
