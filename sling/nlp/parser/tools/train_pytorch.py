@@ -254,45 +254,6 @@ class Sempar(nn.Module):
     self.ff_softmax.bias.data.fill_(0.0)
 
 
-  def initialize_from_tf(self, tf_file):
-    param_map = {}
-    unseen = {}
-    for name, p in self.named_parameters():
-      p.data.zero_()
-      param_map[name] = p
-      unseen[p] = name
-      print "Will try to initialize", name
-
-    with open(tf_file, "r") as f:
-      for line in f:
-        parts = line.split("=")
-        if len(parts) == 3 and parts[0] == "Init":
-          param = parts[1]
-          if param not in param_map:
-            paramw = param + ".weight"
-            if paramw not in param_map:
-              print 'Ignoring unknown param', param
-              continue
-            else:
-              param = paramw
-
-          t = torch.Tensor(eval(parts[2]))
-          if t.dim() == 1: t = t.view(1, -1)
-          del unseen[param_map[param]]
-          param_map[param].data = t
-          print "Initialized", param, "with data of shape", param_map[param].data.size()
-
-    if len(unseen) > 0:
-      print "Didn't see values for:"
-      for param, name in unseen.iteritems():
-        print name
-      assert False
-
-    if global_debug:
-      print "Final values:"
-      for name, p in self.named_parameters():
-        print name, "=", p.data
-
   def _embedding_lookup(self, embedding_bags, features):
     assert len(embedding_bags) == len(features)
     values = []
@@ -857,50 +818,6 @@ def learn(sempar, corpora, evaluator=None, illustrate=False):
     for a in state.actions:
       print "Predicted", a
     print state.textual()
-
-
-def replicate():
-  torch.set_printoptions(precision=12)
-  path = "/usr/local/google/home/grahul/sempar_ontonotes/"
-  tf_folder = path + "/out-tf/"
-  resources = training.Resources()
-  resources.load(commons_path=path + "commons.new",
-                 train_path=path + "dev5long.rec",
-                 word_embeddings_path=path + "word2vec-32-embeddings.bin")
-                 #word_embeddings_path=None) #path + "word2vec-32-embeddings.bin")
-
-  sempar = Sempar(resources.spec)
-  words = sempar.spec.words
-  print "Words before override:", words.size()
-  sempar.initialize_from_tf(tf_folder + "tf.debug")
-
-  sempar.spec.words.load(tf_folder + "word-vocab")
-  print "Words after override:", words.size()
-
-  dev_path = path + "dev5.rec"
-  tmp_folder = path + "pyt/tmp/"
-  evaluator = partial(dev_accuracy,
-                      resources.commons_path,
-                      resources.commons,
-                      dev_path,
-                      resources.schema,
-                      tmp_folder)
-  hyperparams = Trainer.Hyperparams(
-      batch_size=1, num_examples=20, lr=0.05, l2_coeff=0.0, \
-          gradient_clip=None, optimizer="sgd")
-  trainer = Trainer(sempar, evaluator, None, hyperparams=hyperparams)
-
-  resources.train.rewind()
-  resources.train.set_loop(True)
-  for document in resources.train:
-    if trainer.count >= trainer.hyperparams.num_examples:
-      break
-    trainer.process(document)
-
-  # Process the partial batch (if any) at the end, and evaluate one last time.
-  trainer.update()
-  global_debug=False
-  trainer.evaluate()
 
 
 def flow_test():
