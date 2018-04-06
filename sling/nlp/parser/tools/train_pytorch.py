@@ -129,6 +129,14 @@ class DragnnLSTM(nn.Module):
     self._bc = Param(torch.randn(1, hidden_dim))
 
 
+  def copy_to_flow_lstm(self, flow_lstm):
+    for p in ["x2i", "h2i", "c2i", "bi", \
+              "x2o", "h2o", "c2o", "bo", "x2c", "h2c", "bc"]:
+      assert hasattr(self, "_" + p), p
+      assert hasattr(flow_lstm, p), p
+      getattr(flow_lstm, p).data = getattr(self, "_" + p).data.numpy()
+
+
   def forward_one_step(self, input_tensor, prev_h, prev_c):
     i_ait = torch.mm(input_tensor, self._x2i) + \
         torch.mm(prev_h, self._h2i) + \
@@ -389,9 +397,8 @@ class Sempar(nn.Module):
     else:
       if document.size() == 0: return state
 
-      topk = 7000
-      if topk > self.spec.num_actions:
-        topk = self.spec.num_actions
+      # Number of top-k actions to consider.
+      topk = self.spec.num_actions
       shift = actions.shift()
       stop = actions.stop()
       predicted = shift
@@ -499,14 +506,16 @@ class Sempar(nn.Module):
 
     # Specify LSTMs and their input features.
     lr = builder.Builder(fl, "lr_lstm")
-    rl = builder.Builder(fl, "rl_lstm")
     lr_input = lr.var(name="input", shape=[1, spec.lstm_input_dim])
-    rl_input = rl.var(name="input", shape=[1, spec.lstm_input_dim])
-    lr_out, lr_cnx = flownn.lstm(lr, input=lr_input, size=spec.lstm_hidden_dim)
-    rl_out, rl_cnx = flownn.lstm(rl, input=rl_input, size=spec.lstm_hidden_dim)
-
+    flow_lr_lstm = flownn.LSTM(lr, input=lr_input, size=spec.lstm_hidden_dim)
+    self.lr_lstm.copy_to_flow_lstm(flow_lr_lstm)
     lr_concat_op = lr.rawop(optype="ConcatV2", name="concat")
     lr_concat_op.add_output(lr_input)
+
+    rl = builder.Builder(fl, "rl_lstm")
+    rl_input = rl.var(name="input", shape=[1, spec.lstm_input_dim])
+    flow_rl_lstm = flownn.LSTM(rl, input=rl_input, size=spec.lstm_hidden_dim)
+    self.rl_lstm.copy_to_flow_lstm(flow_rl_lstm)
     rl_concat_op = rl.rawop(optype="ConcatV2", name="concat")
     rl_concat_op.add_output(rl_input)
 
@@ -520,11 +529,16 @@ class Sempar(nn.Module):
     # Specify the FF unit.
     ff = builder.Builder(fl, "ff")
     ff_input = ff.var(name="input", shape=[1, spec.ff_input_dim])
-    ff_logits, ff_hidden = flownn.feed_forward(
+    flow_ff = flownn.FF(
         ff, \
         input=ff_input, \
         layers=[spec.ff_hidden_dim, spec.num_actions], \
         hidden=0)
+    flow_ff.set_layer_data(0, self.ff_layer.weight.data.numpy(), \
+                           self.ff_layer.bias.data.numpy())
+    flow_ff.set_layer_data(1, self.ff_softmax.weight.data.numpy(), \
+                           self.ff_softmax.bias.data.numpy())
+
     ff_concat_op = ff.rawop(optype="ConcatV2", name="concat")
     ff_concat_op.add_output(ff_input)
 
@@ -536,8 +550,8 @@ class Sempar(nn.Module):
       return l
 
     # Add links to the two LSTMs.
-    ff_lr = link(ff, "lr_lstm", spec.lstm_hidden_dim, lr_cnx)
-    ff_rl = link(ff, "rl_lstm", spec.lstm_hidden_dim, rl_cnx)
+    ff_lr = link(ff, "lr_lstm", spec.lstm_hidden_dim, flow_lr_lstm.cnx_hidden)
+    ff_rl = link(ff, "rl_lstm", spec.lstm_hidden_dim, flow_rl_lstm.cnx_hidden)
 
     # Add link and connector for previous steps.
     ff_cnx = ff.cnx("step", args=[])
@@ -589,13 +603,13 @@ def dev_accuracy(commons_path, commons, dev_path, schema, tmp_folder, sempar):
   print "Annotating dev documents", now(), mem()
   test_path = os.path.join(tmp_folder, "dev.annotated.rec")
   writer = sling.RecordWriter(test_path)
-  count = 1
+  count = 0
   start_time = time.time()
   for document in dev:
     state = sempar.forward(document, train=False)
     state.write()
     writer.write(str(count), state.encoded())
-    if count % 100 == 0:
+    if (count + 1) % 100 == 0:
       print "  Annotated", count, "documents", now(), mem()
     count += 1
   writer.close()
