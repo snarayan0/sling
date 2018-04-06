@@ -573,8 +573,8 @@ class Actions:
     self.max_elaborate_source = self._maxvalue(Action.ELABORATE, "source", p)
 
 
-  # Saves the action table as a SLING frame.
-  def save(self, commons, filename):
+  # Encodes and returns the action table as a SLING frame.
+  def encoded(self, commons):
     store = sling.Store(commons)
     table = store.frame({"id": "/table"})
 
@@ -606,7 +606,7 @@ class Actions:
         lambda i: "/table/action/" + i,
         ["type", "length", "source", "target", "role", "label"])
     table["/table/symbols"] = symbols
-    store.save(filename)
+    return table.data(binary=True)
 
 
   def __str__(self):
@@ -827,15 +827,15 @@ class Spec:
     if num_roles > 0:
       num = 32
       dim = self.roles_dim
-      self.add_ff_fixed("in_roles", dim, num_roles * fl, num)
-      self.add_ff_fixed("out_roles", dim, num_roles * fl, num)
-      self.add_ff_fixed("labeled_roles", dim, num_roles * fl * fl, num)
-      self.add_ff_fixed("unlabeled_roles", dim, fl * fl, num)
+      self.add_ff_fixed("in-roles", dim, num_roles * fl, num)
+      self.add_ff_fixed("out-roles", dim, num_roles * fl, num)
+      self.add_ff_fixed("labeled-roles", dim, num_roles * fl * fl, num)
+      self.add_ff_fixed("unlabeled-roles", dim, fl * fl, num)
 
-    self.add_ff_link("frame_creation_steps", 64, self.ff_hidden_dim, fl)
-    self.add_ff_link("frame_focus_steps", 64, self.ff_hidden_dim, fl)
-    self.add_ff_link("frame_end_lr", 32, self.lstm_hidden_dim, fl)
-    self.add_ff_link("frame_end_rl", 32, self.lstm_hidden_dim, fl)
+    self.add_ff_link("frame-creation-steps", 64, self.ff_hidden_dim, fl)
+    self.add_ff_link("frame-focus-steps", 64, self.ff_hidden_dim, fl)
+    self.add_ff_link("frame-end-lr", 32, self.lstm_hidden_dim, fl)
+    self.add_ff_link("frame-end-rl", 32, self.lstm_hidden_dim, fl)
     self.add_ff_link("history", 64, self.ff_hidden_dim, self.history_limit)
     self.add_ff_link("lr", 32, self.lstm_hidden_dim, 1)
     self.add_ff_link("rl", 32, self.lstm_hidden_dim, 1)
@@ -1021,18 +1021,18 @@ class Spec:
     num_roles = len(self.actions.roles)
     fl = self.frame_limit
     raw_features = []
-    if feature_spec.name == "in_roles":
+    if feature_spec.name == "in-roles":
       for e in role_graph:
         if e[2] is not None and e[2] < fl and e[2] >= 0:
           raw_features.append(e[2] * num_roles + e[1])
-    elif feature_spec.name == "out_roles":
+    elif feature_spec.name == "out-roles":
       for e in role_graph:
         raw_features.append(e[0] * num_roles + e[1])
-    elif feature_spec.name == "unlabeled_roles":
+    elif feature_spec.name == "unlabeled-roles":
       for e in role_graph:
         if e[2] is not None and e[2] < fl and e[2] >= 0:
           raw_features.append(e[2] * fl + e[0])
-    elif feature_spec.name == "labeled_roles":
+    elif feature_spec.name == "labeled-roles":
       for e in role_graph:
         if e[2] is not None and e[2] < fl and e[2] >= 0:
           raw_features.append(e[0] * fl * num_roles + e[2] * num_roles + e[1])
@@ -1060,25 +1060,25 @@ class Spec:
       if state.current < state.end:
         index = -1 - (state.current - state.begin)
       output.append(index)
-    elif name == "frame_end_lr":
+    elif name == "frame-end-lr":
       for i in xrange(num):
         index = None
         end = state.frame_end_inclusive(i)
         if end != -1:
           index = end - state.begin
         output.append(index)
-    elif name == "frame_end_rl":
+    elif name == "frame-end-rl":
       for i in xrange(num):
         index = None
         end = state.frame_end_inclusive(i)
         if end != -1:
           index = -1 - (end - state.begin)
         output.append(index)
-    elif name == "frame_creation_steps":
+    elif name == "frame-creation-steps":
       for i in xrange(num):
         step = state.creation_step(i)
         output.append(None if step == -1 else step)
-    elif name == "frame_focus_steps":
+    elif name == "frame-focus-steps":
       for i in xrange(num):
         step = state.focus_step(i)
         output.append(None if step == -1 else step)
@@ -1111,13 +1111,10 @@ class Spec:
     suffix.type = "affix"
     suffix.data = str(self.dump_suffixes())
 
-    import tempfile
-    actions_file = tempfile.NamedTemporaryFile()
-    self.actions.save(self.commons, actions_file.name)
-    actions_file.flush()
     actions = flow.blob("actions")
     actions.type = "frames"
-    actions.data = read_file(actions_file.name)
+    actions.data = self.actions.encoded(self.commons)
+
 
   # Debugging methods.
   #
@@ -1140,13 +1137,13 @@ class Spec:
     nr = len(roles)
 
     strings = []
-    if feature_spec.name == "out_roles":
+    if feature_spec.name == "out-roles":
       strings = [str(i / nr) + "->" + str(roles[i % nr]) for i in indices]
-    elif feature_spec.name == "in_roles":
+    elif feature_spec.name == "in-roles":
       strings = [str(roles[i % nr]) + "->" + str(i / nr) for i in indices]
-    elif feature_spec.name == "unlabeled_roles":
+    elif feature_spec.name == "unlabeled-roles":
       strings = [str(i / limit) + "->" + str(i % limit) for i in indices]
-    elif feature_spec.name == "labeled_roles":
+    elif feature_spec.name == "labeled-roles":
       t = limit * nr
       for i in indices:
         value = str(i / t) + "->" + str(roles[(i % t) % nr])

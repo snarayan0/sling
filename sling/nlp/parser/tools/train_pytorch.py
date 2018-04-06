@@ -309,9 +309,9 @@ class Sempar(nn.Module):
 
       # Figure out where we need to pick the activations from.
       activations = ff_activations
-      if f.name == "lr" or f.name == "frame_end_lr":
+      if f.name == "lr" or f.name == "frame-end-lr":
         activations = lr_lstm_output
-      elif f.name == "rl" or f.name == "frame_end_rl":
+      elif f.name == "rl" or f.name == "frame-end-rl":
         activations = rl_lstm_output
 
       # Get indices into the activations. Recall that missing indices are
@@ -528,8 +528,9 @@ class Sempar(nn.Module):
     ff_concat_op = ff.rawop(optype="ConcatV2", name="concat")
     ff_concat_op.add_output(ff_input)
 
-    def link(bldr, name, dim, cnx):
-      l = bldr.var("link/" + name, shape=[-1, dim])
+    def link(bldr, name, dim, cnx, prefix=True):
+      if prefix: name = "link/" + name
+      l = bldr.var(name, shape=[-1, dim])
       l.ref = True
       cnx.add(l)
       return l
@@ -540,7 +541,7 @@ class Sempar(nn.Module):
 
     # Add link and connector for previous steps.
     ff_cnx = ff.cnx("step", args=[])
-    ff_steps = link(ff, "steps", spec.ff_hidden_dim, ff_cnx)
+    ff_steps = link(ff, "steps", spec.ff_hidden_dim, ff_cnx, False)
 
     for feature, bag in zip(spec.ff_fixed_features, self.ff_fixed_embeddings):
       dump_fixed_feature(feature, bag, ff, ff_concat_op)
@@ -550,11 +551,11 @@ class Sempar(nn.Module):
 
       activations = None
       n = feature.name
-      if n == "frame_end_lr" or n == "lr":
+      if n == "frame-end-lr" or n == "lr":
         activations = ff_lr
-      elif n == "frame_end_rl" or n == "rl":
+      elif n == "frame-end-rl" or n == "rl":
         activations = ff_rl
-      elif n in ["frame_creation_steps", "frame_focus_steps", "history"]:
+      elif n in ["frame-creation-steps", "frame-focus-steps", "history"]:
         activations = ff_steps
       else:
         raise ValueError("Unknown feature %r" % n)
@@ -581,7 +582,6 @@ class Sempar(nn.Module):
 
     finish_concat_op(ff, ff_concat_op)
     fl.save(flow_file)
-    print "Wrote flow to", flow_file
 
 
 def dev_accuracy(commons_path, commons, dev_path, schema, tmp_folder, sempar):
@@ -785,7 +785,7 @@ class Trainer:
         metrics = self.evaluator(self.model)
         self.checkpoint_metrics.append((self.count, metrics))
         eval_metric = metrics["eval_metric"]
-        print "Eval metric after", self.count, ":", eval_metric
+        print "Eval metric after", self.count, " examples:", eval_metric
 
         if self.file_prefix is not None:
           if self.best_metric is None or self.best_metric < eval_metric:
@@ -806,13 +806,13 @@ class Trainer:
     corpora.rewind()
     corpora.set_loop(True)
     for document in corpora:
-      if self.count > self.hyperparams.num_examples:
+      if self.count >= self.hyperparams.num_examples:
         break
       self.process(document)
 
     # Process the partial batch (if any) at the end, and evaluate one last time.
-    trainer.update()
-    trainer.evaluate()
+    self.update()
+    self.evaluate()
 
 
 def flow_test(args):
@@ -826,6 +826,7 @@ def flow_test(args):
 
   flow_file = "/tmp/sempar.pyt.flow"
   sempar.dump_flow(flow_file)
+  print "Wrote flow to", flow_file
 
 
 def train(args):
