@@ -31,6 +31,7 @@ from functools import partial
 
 from train_util import mem as mem
 from train_util import now as now
+from train_util import argparser as argparser
 
 sys.path.insert(0, "sling/nlp/parser/trainer/flow")
 import nn as flownn
@@ -536,7 +537,6 @@ class Sempar(nn.Module):
     # Add links to the two LSTMs.
     ff_lr = link(ff, "lr_lstm", spec.lstm_hidden_dim, lr_cnx)
     ff_rl = link(ff, "rl_lstm", spec.lstm_hidden_dim, rl_cnx)
-    print ff_lr, ff_rl, lr_cnx, rl_cnx
 
     # Add link and connector for previous steps.
     ff_cnx = ff.cnx("step", args=[])
@@ -559,7 +559,7 @@ class Sempar(nn.Module):
       else:
         raise ValueError("Unknown feature %r" % n)
 
-      name = feature.name + "/collect"
+      name = feature.name + "/Collect"
       collect = ff.rawop(optype="Collect", name=name)
       collect.add_input(indices)
       collect.add_input(activations)
@@ -568,7 +568,6 @@ class Sempar(nn.Module):
       collect.add_output(collected)
 
       sz = lt.weight.size()
-      print n, sz
       transform = ff.var(name=feature.name + "/transform", shape=[sz[0], sz[1]])
       transform.data = lt.weight.data.numpy()
 
@@ -624,7 +623,7 @@ class Trainer:
       self.report_every = report_every
       self.l2_coeff = l2_coeff
       self.batch_size = batch_size
-      self.gradient_clip = 1.0
+      self.gradient_clip = gradient_clip
       self.optimizer = optimizer
       self.adam_beta1 = adam_beta1
       self.adam_beta2 = adam_beta2
@@ -633,7 +632,38 @@ class Trainer:
       self.moving_avg_coeff = moving_avg_coeff
 
 
-  def __init__(self, sempar, evaluator=None, model_file=None, \
+    def set(self, args):
+      if args.learning_rate is not None:
+        self.lr = args.learning_rate
+      if args.batch_size is not None:
+        self.batch_size = args.batch_size
+      if args.train_steps is not None:
+        self.num_examples = args.train_steps * self.batch_size
+      if args.report_every is not None:
+        self.report_every = args.report_every * self.batch_size
+      if args.l2_coeff is not None:
+        self.l2_coeff = args.l2_coeff
+      if args.gradient_clip_norm is not None:
+        self.gradient_clip = args.gradient_clip_norm
+      if args.learning_method is not None:
+        self.optimizer = args.learning_method
+      if args.adam_beta1 is not None:
+        self.adam_beta1 = args.adam_beta1
+      if args.adam_beta2 is not None:
+        self.adam_beta2 = args.adam_beta2
+      if args.adam_eps is not None:
+        self.adam_eps = args.adam_eps
+      if args.use_moving_average is not None:
+        self.moving_avg = args.use_moving_average
+      if args.moving_average_coeff is not None:
+        self.moving_avg_coeff = args.moving_average_coeff
+
+
+    def __str__(self):
+      return str(self.__dict__)
+
+
+  def __init__(self, sempar, evaluator=None, file_prefix=None, \
                hyperparams=Hyperparams()):
     self.model = sempar
     self.evaluator = evaluator
@@ -668,7 +698,7 @@ class Trainer:
 
     self.checkpoint_metrics = []
     self.best_metric = None
-    self.model_file = model_file
+    self.file_prefix = file_prefix
 
     self.averages = {}
     if hyperparams.moving_avg:
@@ -701,21 +731,6 @@ class Trainer:
     if self.hyperparams.gradient_clip is not None:
       for p in self.model.parameters():
         torch.nn.utils.clip_grad_norm([p], self.hyperparams.gradient_clip)
-
-
-  def tf_name(self, name):
-    if name == "ff_layer.weight": return "ff/weights_0:0"
-    if name == "ff_layer.bias": return "ff/bias_0:0"
-    if name == "ff_softmax.weight": return "ff/weights_softmax:0"
-    if name == "ff_softmax.bias": return "ff/bias_softmax:0"
-
-    name = name.replace("_lstm._", "_lstm/")
-    name = name.replace("lstm_embedding", "lstm/fixed_embedding_matrix")
-    name = name.replace("_fixed_embedding", "/fixed_embedding_matrix")
-    name = name.replace("_link_transform", "/linked_embedding_matrix")
-    if name.endswith(".weight"): name = name[0:-7]
-    name = name + ":0"
-    return name
 
 
   def update(self):
@@ -772,62 +787,39 @@ class Trainer:
         eval_metric = metrics["eval_metric"]
         print "Eval metric after", self.count, ":", eval_metric
 
-        if self.model_file is not None:
+        if self.file_prefix is not None:
           if self.best_metric is None or self.best_metric < eval_metric:
             self.best_metric = eval_metric
-            best_file = self.model_file + ".best"
-            torch.save(self.model.state_dict(), best_file)
-            print "Updating best model at", best_file
+            best_model_file = self.file_prefix + ".best.model"
+            torch.save(self.model.state_dict(), best_model_file)
+            print "Updating best model at", best_model_file
+
+            best_flow_file = self.file_prefix + ".best.flow"
+            self.model.dump_flow(best_flow_file)
+            print "Updating best flow at", best_flow_file
 
         self.last_eval_count = self.count
         self._swap_with_ema_parameters()
 
 
-def learn(sempar, corpora, evaluator=None, illustrate=False):
-  # Pick a reasonably long sample document.
-  sample_doc = None
-  for d in corpora:
-    if d.size() > 5:
-      sample_doc = d
-      break
+  def train(self, corpora):
+    corpora.rewind()
+    corpora.set_loop(True)
+    for document in corpora:
+      if self.count > self.hyperparams.num_examples:
+        break
+      self.process(document)
 
-  #if os.path.exists(model_file):
-  #  sempar.load_state_dict(torch.load(model_file))
-  #  print "Loaded model from", model_file
-
-  model_file = "/tmp/pytorch.model"
-  trainer = Trainer(sempar, evaluator, model_file)
-  corpora.rewind()
-  corpora.set_loop(True)
-  for document in corpora:
-    if trainer.count > trainer.hyperparams.num_examples:
-      break
-    trainer.process(document)
-
-  # Process the partial batch (if any) at the end, and evaluate one last time.
-  trainer.update()
-  trainer.evaluate()
-
-  # See how the sample document performs on the trained model.
-  if illustrate:
-    print "Sample Document:"
-    for t in sample_doc.tokens():
-      print "Token", t.text
-    for g in sample_doc.gold:
-      print "Gold", g
-    state = sempar.forward(sample_doc, train=False)
-    state.write()
-    for a in state.actions:
-      print "Predicted", a
-    print state.textual()
+    # Process the partial batch (if any) at the end, and evaluate one last time.
+    trainer.update()
+    trainer.evaluate()
 
 
-def flow_test():
-  path = "/usr/local/google/home/grahul/sempar_ontonotes/"
+def flow_test(args):
   resources = training.Resources()
-  resources.load(commons_path=path + "commons.new",
-                 train_path=path + "dev500.rec",
-                 word_embeddings_path=None)
+  resources.load(commons_path=args.commons,
+                 train_path=args.train_corpus,
+                 word_embeddings_path=args.word_embeddings)
 
   sempar = Sempar(resources.spec)
   sempar.initialize()
@@ -836,26 +828,42 @@ def flow_test():
   sempar.dump_flow(flow_file)
 
 
-def trial_run():
-  path = "/usr/local/google/home/grahul/sempar_ontonotes/"
+def train(args):
   resources = training.Resources()
-  resources.load(commons_path=path + "commons.new",
-                 train_path=path + "dev500.rec",
-                 word_embeddings_path=path + "word2vec-32-embeddings.bin")
+  resources.load(commons_path=args.commons,
+                 train_path=args.train_corpus,
+                 word_embeddings_path=args.word_embeddings)
 
   sempar = Sempar(resources.spec)
   sempar.initialize()
 
-  dev_path = path + "dev500.rec"
-  tmp_folder = path + "tmp/"
+  tmp_folder = os.path.join(args.output_folder, "tmp")
+  if not os.path.exists(tmp_folder):
+    os.makedirs(tmp_folder)
+
   evaluator = partial(dev_accuracy,
                       resources.commons_path,
                       resources.commons,
-                      dev_path,
+                      args.dev_corpus,
                       resources.schema,
                       tmp_folder)
-  learn(sempar, resources.train, evaluator, illustrate=False)
+
+  file_prefix = os.path.join(args.output_folder, "pytorch")
+  hyperparams = Trainer.Hyperparams()
+  hyperparams.set(args)
+  print "Using hyperparameters:", hyperparams
+
+  trainer = Trainer(sempar, evaluator, file_prefix, hyperparams)
+  trainer.train(resources.train)
 
 
-trial_run()
-#flow_test()
+parser = argparser('PyTorch Trainer for Sempar')
+parser.add_argument('--mode', type=str)
+args = parser.parse_args()
+
+if args.mode == "flow":
+  flow_test(args)
+elif args.mode == "train":
+  train(args)
+else:
+  raise ValueError("Need to set --mode to 'flow' or 'train'")

@@ -734,7 +734,6 @@ class Spec:
     allowed = self.num_actions - sum(self.actions.disallowed)
     print "num allowed actions after pruning", allowed
     print len(self.actions.roles), "unique roles in action table"
-    print str(self.actions)
 
 
   # Returns suffix(es) of 'word'.
@@ -872,7 +871,6 @@ class Spec:
           self.suffix.add(s)
     print "Words:", self.words.size(), "items in lexicon, including OOV"
     print "Suffix:", self.suffix.size(), "items in lexicon"
-    print self.suffix.first_few("Affix ", n=20)
 
     # Prepare action table.
     corpora.set_gold(True)
@@ -1516,6 +1514,34 @@ def now():
 def mem():
   p = psutil.Process(os.getpid())
   return str(p.memory_info())
+
+
+def argparser(description):
+  import argparse
+
+  parser = argparse.ArgumentParser(description=description)
+  parser.add_argument('--output_folder', type=str)
+  parser.add_argument('--commons', type=str)
+  parser.add_argument('--train_corpus', type=str)
+  parser.add_argument('--dev_corpus', type=str)
+  parser.add_argument('--word_embeddings', type=str)
+
+  # Training hyperparameters.
+  # Notable omissions: decay_steps, dropout_rate.
+  parser.add_argument('--train_steps', type=int)
+  parser.add_argument('--report_every', type=int)
+  parser.add_argument('--batch_size', type=int)
+  parser.add_argument('--learning_method', type=str)
+  parser.add_argument('--use_moving_average', type=bool)
+  parser.add_argument('--moving_average_coeff', type=float)
+  parser.add_argument('--gradient_clip_norm', type=float)
+  parser.add_argument('--learning_rate', type=float)
+  parser.add_argument('--adam_beta1', type=float)
+  parser.add_argument('--adam_beta2', type=float)
+  parser.add_argument('--adam_eps', type=float)
+  parser.add_argument('--l2_coeff', type=float)
+
+  return parser
 
 
 class Resources:
