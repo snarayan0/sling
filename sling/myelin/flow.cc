@@ -269,7 +269,8 @@ int Attributes::Get(const string &name, int defval) const {
 bool Attributes::Get(const string &name, bool defval) const {
   for (auto &attr : *this) {
     if (attr.name == name) {
-      return attr.value == "1" || attr.value == "T" || attr.value == "true";
+      return attr.value == "1" || attr.value == "T" || attr.value == "true" ||
+          attr.value == "True";
     }
   }
   return defval;
