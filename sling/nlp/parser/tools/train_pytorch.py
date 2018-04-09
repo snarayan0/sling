@@ -829,7 +829,13 @@ class Trainer:
     self.evaluate()
 
 
+def check_present(args, ls):
+  for x in ls:
+    assert getattr(args, x, None) is not None, "%r should be present" % x
+
+
 def flow_test(args):
+  check_present(args, ["commons", "train_corpus"])
   resources = training.Resources()
   resources.load(commons_path=args.commons,
                  train_path=args.train_corpus,
@@ -844,6 +850,8 @@ def flow_test(args):
 
 
 def train(args):
+  check_present(
+      args, ["commons", "train_corpus", "output_folder", "dev_corpus"])
   resources = training.Resources()
   resources.load(commons_path=args.commons,
                  train_path=args.train_corpus,
@@ -872,13 +880,40 @@ def train(args):
   trainer.train(resources.train)
 
 
+def evaluate(args):
+  check_present(args, ["commons", "train_corpus", "dev_corpus", "model_file"])
+  resources = training.Resources()
+  resources.load(commons_path=args.commons,
+                 train_path=args.train_corpus,
+                 word_embeddings_path=args.word_embeddings)
+
+  sempar = Sempar(resources.spec)
+  sempar.load_state_dict(torch.load(args.model_file))
+
+  tmp_folder = os.path.join(args.output_folder, "tmp")
+  if not os.path.exists(tmp_folder):
+    os.makedirs(tmp_folder)
+
+  evaluator = partial(dev_accuracy,
+                      resources.commons_path,
+                      resources.commons,
+                      args.dev_corpus,
+                      resources.schema,
+                      tmp_folder)
+  metrics = evaluator(sempar)
+  print "Eval metric", metrics["eval_metric"]
+
+
 parser = argparser('PyTorch Trainer for Sempar')
 parser.add_argument('--mode', type=str)
+parser.add_argument('--model_file', type=str)
 args = parser.parse_args()
 
 if args.mode == "flow":
   flow_test(args)
 elif args.mode == "train":
   train(args)
+elif args.mode == "evaluate":
+  evaluate(args)
 else:
-  raise ValueError("Need to set --mode to 'flow' or 'train'")
+  raise ValueError("Need to set --mode to flow/train/evaluate")
