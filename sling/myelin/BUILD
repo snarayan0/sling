@@ -148,3 +148,17 @@ cc_binary(
   ],
 )
 
+cc_binary(
+  name = "compile",
+  srcs = ["compile.cc"],
+  deps = [
+    ":compute",
+    ":flow",
+    "//sling/base",
+    "//sling/file:posix",
+    "//sling/myelin/kernel:dragnn",
+    "//sling/myelin/kernel:tensorflow",
+    "//sling/util:elf-writer",
+  ],
+)
+
