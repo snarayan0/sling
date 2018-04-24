@@ -26,6 +26,7 @@
 #include "sling/myelin/flow.h"
 #include "sling/myelin/kernel/dragnn.h"
 #include "sling/myelin/kernel/tensorflow.h"
+#include "sling/string/ctype.h"
 #include "sling/util/elf-writer.h"
 
 DEFINE_string(flow, "", "Myelin flow file");
@@ -33,6 +34,7 @@ DEFINE_string(o, "", "ELF object output file for generated code");
 DEFINE_string(hdr, "", "C++ header file for accessing model");
 DEFINE_string(data, "", "Separate data file for storing parameters");
 DEFINE_string(ns, "", "C++ name space for generated code");
+DEFINE_bool(upper, true, "uppercase class names");
 DEFINE_bool(dragnn, false, "register DRAGNN kernels");
 
 DEFINE_bool(sse, true, "SSE support");
@@ -50,9 +52,10 @@ using namespace sling::myelin;
 class AOTLinker : public Linker {
  public:
   struct Options {
-    string flow_file;            // source flow file
-    bool external_data = false;  // parameter data stored in external file
-    string ns;                   // C++ name space for generated code
+    string flow_file;              // source flow file
+    bool external_data = false;    // parameter data stored in external file
+    bool uppercase_names = false;  // uppercase class names
+    string ns;                     // C++ name space for generated code
   };
 
   AOTLinker(const Options &options);
@@ -64,6 +67,9 @@ class AOTLinker : public Linker {
                jit::Code *code,
                int data_size) override;
   void AddData(Tensor *data) override;
+
+  // Add channel.
+  void AddChannel(const string &name, Tensor *format);
 
   // Link sections.
   void Link();
@@ -82,8 +88,30 @@ class AOTLinker : public Linker {
   string sanitize(const string &name) {
     string sanitized;
     for (char c : name) {
-      if (c == '/') c = '_';
+      if (!ascii_isalnum(c)) c = '_';
       sanitized.push_back(c);
+    }
+    return sanitized;
+  }
+
+  // Return sanitized class name that is a legal C++ identifier.
+  string sanitize_class_name(const string &name) {
+    string sanitized;
+    if (options_.uppercase_names) {
+      bool upper = true;
+      for (char c : name) {
+        if (!ascii_isalnum(c)) {
+          upper = true;
+        } else {
+          if (upper) {
+            c = ascii_toupper(c);
+            upper = false;
+          }
+          sanitized.push_back(c);
+        }
+      }
+    } else {
+      sanitized = sanitize(name);
     }
     return sanitized;
   }
@@ -140,7 +168,12 @@ AOTLinker::AOTLinker(const Options &options) : options_(options) {
           << "char *data; "
           << "return posix_memalign(reinterpret_cast<void **>(&data), "
           << "align, size) == 0 ? data : 0;}\n"
-          << "inline void memfree(char *data) { free(data); }\n";
+          << "inline void memfree(char *data) { free(data); }\n"
+          << "inline char *memrealloc(char *data, size_t old_size, "
+          << "size_t new_size, size_t align) {\n"
+          << "  char *buffer = memalloc(new_size, align);\n"
+          << "  if (data) { memcpy(buffer, data, old_size); memfree(data); }\n"
+          << "  return buffer;\n}\n";
 }
 
 void AOTLinker::BeginCell(Cell *cell) {
@@ -152,7 +185,7 @@ void AOTLinker::BeginCell(Cell *cell) {
   header_ <<  "extern void " << entry_name << "(void *data);\n\n";
 
   // Write class prologue for cell.
-  string cname = sanitize(cell->name());
+  string cname = sanitize_class_name(cell->name());
   header_ << "// " << cell->name() << "\n"
           << "class " + cname + " {\n"
           << " public:\n";
@@ -284,6 +317,44 @@ void AOTLinker::AddData(Tensor *data) {
   s->Add(data->data(), data->space());
 }
 
+void AOTLinker::AddChannel(const string &name, Tensor *format) {
+  int align = jit::CPU::CacheLineSize();
+  if (format->byte_alignment() > align) align = align;
+
+  string cname = sanitize_class_name(name);
+  const char *ctype = TypeTraits::of(format->type()).ctype();
+  int size = format->size();
+  header_ << "// " << name << " channel\n"
+          << "class " + cname + " {\n"
+          << " public:\n"
+          << "  " << cname << "() : data_(0), size_(0), capacity_(0)  {}\n"
+          << "  ~" << cname << "() { memfree(data_); }\n"
+          << "  " << ctype << " *operator [](int idx) const { "
+          << "return reinterpret_cast<" << ctype << " *>(data_ + idx * "
+          << size << " ); }\n"
+          << "  int size() const { return size_; }\n"
+          << "  void reserve(int n) {\n"
+          << "    if (n < size_ || n == capacity_) return;\n"
+          << "    data_ = memrealloc(data_, size_ * " << size << ", "
+          << "n * " << size << ", " << align << ");\n"
+          << "    capacity_ = n;\n"
+          << "  }\n"
+          << "  void resize(int n) {\n"
+          << "    if (n > capacity_) {\n"
+          << "      int cap = capacity_ * 2;\n"
+          << "      if (cap < 8) cap = 8;\n"
+          << "      if (cap < n) cap = n;\n"
+          << "      reserve(cap);\n"
+          << "    }\n"
+          << "    size_ = n;\n"
+          << "  }\n"
+          << " private:\n"
+          << "  char *data_;\n"
+          << "  int size_;\n"
+          << "  int capacity_;\n"
+          << "};\n\n";
+}
+
 void AOTLinker::Link() {
   // Write epilogue for header file.
   auto *s = options_.external_data ? &bss_ : &rodata_;
@@ -363,6 +434,7 @@ int main(int argc, char *argv[]) {
     linker_opts.ns = basename(FLAGS_flow);
   }
   if (!FLAGS_data.empty()) linker_opts.external_data = true;
+  linker_opts.uppercase_names = FLAGS_upper;
   linker_opts.flow_file = FLAGS_flow;
   AOTLinker linker(linker_opts);
 
@@ -372,6 +444,13 @@ int main(int argc, char *argv[]) {
   if (!net.Compile(flow, library)) {
     std::cout << "Compilation of flow failed\n";
     return 1;
+  }
+
+  // Add channels.
+  for (Flow::Connector *cnx : flow.cnxs()) {
+    if (cnx->links.empty()) continue;
+    Tensor *format = net.GetParameter(cnx->links[0]->name);
+    linker.AddChannel(cnx->name, format);
   }
 
   // Write ELF object file.

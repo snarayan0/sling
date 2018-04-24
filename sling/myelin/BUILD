@@ -158,6 +158,7 @@ cc_binary(
     "//sling/file:posix",
     "//sling/myelin/kernel:dragnn",
     "//sling/myelin/kernel:tensorflow",
+    "//sling/string:ctype",
     "//sling/util:elf-writer",
   ],
 )
