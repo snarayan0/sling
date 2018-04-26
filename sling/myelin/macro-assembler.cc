@@ -141,8 +141,8 @@ int Registers::num_free() const {
   return n;
 }
 
-int SIMDRegisters::try_alloc() {
-  for (int r = 0; r < kNumRegisters; ++r) {
+int SIMDRegisters::try_alloc(bool extended) {
+  for (int r = 0; r < (extended ? kNumZRegisters : kNumXRegisters); ++r) {
     if ((used_regs_ & (1 << r)) == 0) {
       use(r);
       return r;
@@ -151,10 +151,27 @@ int SIMDRegisters::try_alloc() {
   return -1;
 }
 
-int SIMDRegisters::alloc() {
-  int r = try_alloc();
+int SIMDRegisters::alloc(bool extended) {
+  int r = try_alloc(extended);
   CHECK(r != -1) << "SIMD register overflow";
   return r;
+}
+
+OpmaskRegister OpmaskRegisters::try_alloc() {
+  for (int r = 0; r < kNumRegisters; ++r) {
+    OpmaskRegister k = OpmaskRegister::from_code(r);
+    if (!used(k)) {
+      use(k);
+      return k;
+    }
+  }
+  return no_opmask_reg;
+}
+
+OpmaskRegister OpmaskRegisters::alloc() {
+  OpmaskRegister k = try_alloc();
+  CHECK(k.is_valid()) << "Opmask register overflow";
+  return k;
 }
 
 void StaticData::AddData(const void *buffer, int size, int repeat) {

@@ -118,8 +118,9 @@ class Registers {
 // SIMD register allocation.
 class SIMDRegisters {
  public:
-  // An x64 CPU has up to 16 SIMD registers.
-  static const int kNumRegisters = 16;
+  // An x64 CPU has up to 16 SIMD registers (or 32 in AVX512 mode).
+  static const int kNumXRegisters = 16;
+  static const int kNumZRegisters = 32;
 
   // Initialize SIMD registers.
   SIMDRegisters() : used_regs_(0) {}
@@ -141,31 +142,80 @@ class SIMDRegisters {
     return jit::YMMRegister::from_code(try_alloc());
   }
 
+  // Allocate 512-bit ZMM register.
+  jit::ZMMRegister allocz() { return jit::ZMMRegister::from_code(alloc(true)); }
+  jit::ZMMRegister try_allocz() {
+    return jit::ZMMRegister::from_code(try_alloc(true));
+  }
+
   // Allocate SIMD register.
-  int try_alloc();
-  int alloc();
+  int try_alloc(bool extended = false);
+  int alloc(bool extended = false);
 
   // Mark register as being in use.
   void use(int r) { used_regs_ |= (1 << r); }
   void use(jit::XMMRegister r) { use(r.code()); }
   void use(jit::YMMRegister r) { use(r.code()); }
+  void use(jit::ZMMRegister r) { use(r.code()); }
 
   // Mark register as being free.
   void release(int r) { used_regs_ &= ~(1 << r); }
   void release(jit::XMMRegister r) { release(r.code()); }
   void release(jit::YMMRegister r) { release(r.code()); }
+  void release(jit::ZMMRegister r) { release(r.code()); }
 
   // Check if register is used.
   bool used(int r) const { return ((1 << r) & used_regs_) != 0; }
   bool used(jit::XMMRegister r) { return used(r.code()); }
   bool used(jit::YMMRegister r) { return used(r.code()); }
+  bool used(jit::ZMMRegister r) { return used(r.code()); }
 
   // Reset allocated registers.
   void reset() { used_regs_ = 0; }
 
  private:
   // Bit mask of register that are in use.
-  int used_regs_;
+  uint32 used_regs_;
+};
+
+// Opmask register allocation.
+class OpmaskRegisters {
+ public:
+  // There are 8 opmask registers (k0 to k7) where k0 is a constant register.
+  static const int kNumRegisters = 8;
+
+  // Initialize opmask registers.
+  OpmaskRegisters() : used_regs_(kSpecialRegisters) {}
+  OpmaskRegisters(const OpmaskRegisters &kk) : used_regs_(kk.used_regs_) {}
+  OpmaskRegisters &operator=(const OpmaskRegisters &kk) {
+    used_regs_ = kk.used_regs_;
+    return *this;
+  }
+
+  // Allocate opmask register.
+  jit::OpmaskRegister alloc();
+  jit::OpmaskRegister try_alloc();
+
+  // Mark register as being in use.
+  void use(jit::OpmaskRegister k)  { used_regs_ |= (1 << k.code()); }
+
+  // Mark register as being free.
+  void release(jit::OpmaskRegister k)  { used_regs_ &= ~(1 << k.code()); }
+
+  // Check if register is used.
+  bool used(jit::OpmaskRegister k) const {
+    return ((1 << k.code()) & used_regs_) != 0;
+  }
+
+  // Reset allocated registers.
+  void reset() { used_regs_ = kSpecialRegisters; }
+
+ private:
+  // The k0 register is a constant registers.
+  static const int kSpecialRegisters = 1 << jit::OpmaskRegister::kCode_k0;
+
+  // Bit mask of register that are in use.
+  uint32 used_regs_;
 };
 
 // Static data blocks are generated at the end of the code block. The location
@@ -303,6 +353,9 @@ class MacroAssembler : public jit::Assembler {
   // SIMD register allocation.
   SIMDRegisters &mm() { return mm_; }
 
+  // Opmask register allocation.
+  OpmaskRegisters &kk() { return kk_; }
+
   // Returns the instance data register.
   jit::Register instance() const;
 
@@ -317,6 +370,7 @@ class MacroAssembler : public jit::Assembler {
   // Register allocation.
   Registers rr_;
   SIMDRegisters mm_;
+  OpmaskRegisters kk_;
 
   // Static data blocks.
   std::vector<StaticData *> data_blocks_;
