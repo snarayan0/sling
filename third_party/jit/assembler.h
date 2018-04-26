@@ -155,6 +155,26 @@ class Operand {
   friend class Assembler;
 };
 
+// Operation masking.
+enum MaskOp {
+  mask_zero = 0,
+  mask_merge = 1,
+};
+
+class Opmask {
+ public:
+  Opmask(OpmaskRegister reg, MaskOp op) : reg_(reg), op_(op) {}
+
+ private:
+  // Mask register.
+  OpmaskRegister reg_;
+
+  // Masking operation.
+  MaskOp op_;
+};
+
+const Opmask no_opmask = Opmask(k0, mask_zero);
+
 // Assembler for generating Intel x86-64 machine code.
 class Assembler : public CodeGenerator {
  public:
@@ -2127,7 +2147,6 @@ class Assembler : public CodeGenerator {
     vinstr(0x53, dst, ymm0, src, kNone, k0F, kWIG);
   }
 
-
   void vsqrtss(XMMRegister dst, XMMRegister src1, XMMRegister src2) {
     vinstr(0x51, dst, src1, src2, kF3, k0F, kWIG);
   }
@@ -2493,6 +2512,239 @@ class Assembler : public CodeGenerator {
   void vfmad(byte op, XMMRegister dst, XMMRegister src1, const Operand &src2);
   void vfmad(byte op, YMMRegister dst, YMMRegister src1, YMMRegister src2);
   void vfmad(byte op, YMMRegister dst, YMMRegister src1, const Operand &src2);
+
+  // AVX-512 opmask register instructions.
+  void kmovb(OpmaskRegister k1, OpmaskRegister k2) {
+    kinstr(0x90, k1, k2, k66, k0F, kW0);
+  }
+  void kmovb(OpmaskRegister k1, const Operand &src) {
+    kinstr(0x90, k1, src, k66, k0F, kW0);
+  }
+  void kmovb(const Operand &dst, OpmaskRegister k1) {
+    kinstr(0x91, dst, k1, k66, k0F, kW0);
+  }
+  void kmovb(OpmaskRegister k1, Register src) {
+    kinstr(0x92, k1, src, k66, k0F, kW0);
+  }
+  void kmovb(Register dst,  OpmaskRegister k1) {
+    kinstr(0x93, dst, k1, k66, k0F, kW0);
+  }
+
+  void kmovw(OpmaskRegister k1, OpmaskRegister k2) {
+    kinstr(0x90, k1, k2, kNone, k0F, kW0);
+  }
+  void kmovw(OpmaskRegister k1, const Operand &src) {
+    kinstr(0x90, k1, src, kNone, k0F, kW0);
+  }
+  void kmovw(const Operand &dst, OpmaskRegister k1) {
+    kinstr(0x91, dst, k1, kNone, k0F, kW0);
+  }
+  void kmovw(OpmaskRegister k1, Register src) {
+    kinstr(0x92, k1, src, kNone, k0F, kW0);
+  }
+  void kmovw(Register dst,  OpmaskRegister k1) {
+    kinstr(0x93, dst, k1, kNone, k0F, kW0);
+  }
+
+  void kmovd(OpmaskRegister k1, OpmaskRegister k2) {
+    kinstr(0x90, k1, k2, k66, k0F, kW1);
+  }
+  void kmovd(OpmaskRegister k1, const Operand &src) {
+    kinstr(0x90, k1, src, k66, k0F, kW1);
+  }
+  void kmovd(const Operand &dst, OpmaskRegister k1) {
+    kinstr(0x91, dst, k1, k66, k0F, kW1);
+  }
+  void kmovd(OpmaskRegister k1, Register src) {
+    kinstr(0x92, k1, src, kF2, k0F, kW0);
+  }
+  void kmovd(Register dst,  OpmaskRegister k1) {
+    kinstr(0x93, dst, k1, kF2, k0F, kW0);
+  }
+
+  void kmovq(OpmaskRegister k1, OpmaskRegister k2) {
+    kinstr(0x90, k1, k2, kNone, k0F, kW1);
+  }
+  void kmovq(OpmaskRegister k1, const Operand &src) {
+    kinstr(0x90, k1, src, kNone, k0F, kW1);
+  }
+  void kmovq(const Operand &dst, OpmaskRegister k1) {
+    kinstr(0x91, dst, k1, kNone, k0F, kW1);
+  }
+  void kmovq(OpmaskRegister k1, Register src) {
+    kinstr(0x92, k1, src, kF2, k0F, kW1);
+  }
+  void kmovq(Register dst,  OpmaskRegister k1) {
+    kinstr(0x93, dst, k1, kF2, k0F, kW1);
+  }
+
+  void kandb(OpmaskRegister k1, OpmaskRegister k2, OpmaskRegister k3) {
+    kinstr(0x41, k1, k2, k3, k66, k0F, kW0);
+  }
+  void kandw(OpmaskRegister k1, OpmaskRegister k2, OpmaskRegister k3) {
+    kinstr(0x41, k1, k2, k3, kNone, k0F, kW0);
+  }
+  void kandd(OpmaskRegister k1, OpmaskRegister k2, OpmaskRegister k3) {
+    kinstr(0x41, k1, k2, k3, k66, k0F, kW1);
+  }
+  void kandq(OpmaskRegister k1, OpmaskRegister k2, OpmaskRegister k3) {
+    kinstr(0x41, k1, k2, k3, kNone, k0F, kW1);
+  }
+
+  void korb(OpmaskRegister k1, OpmaskRegister k2, OpmaskRegister k3) {
+    kinstr(0x45, k1, k2, k3, k66, k0F, kW0);
+  }
+  void korw(OpmaskRegister k1, OpmaskRegister k2, OpmaskRegister k3) {
+    kinstr(0x45, k1, k2, k3, kNone, k0F, kW0);
+  }
+  void kord(OpmaskRegister k1, OpmaskRegister k2, OpmaskRegister k3) {
+    kinstr(0x45, k1, k2, k3, k66, k0F, kW1);
+  }
+  void korq(OpmaskRegister k1, OpmaskRegister k2, OpmaskRegister k3) {
+    kinstr(0x45, k1, k2, k3, kNone, k0F, kW1);
+  }
+
+  void knotb(OpmaskRegister k1, OpmaskRegister k2) {
+    kinstr(0x44, k1, k2, k66, k0F, kW0);
+  }
+  void knotw(OpmaskRegister k1, OpmaskRegister k2) {
+    kinstr(0x44, k1, k2, kNone, k0F, kW0);
+  }
+  void knotd(OpmaskRegister k1, OpmaskRegister k2) {
+    kinstr(0x44, k1, k2, k66, k0F, kW1);
+  }
+  void knotq(OpmaskRegister k1, OpmaskRegister k2) {
+    kinstr(0x44, k1, k2, kNone, k0F, kW1);
+  }
+
+  void kxorb(OpmaskRegister k1, OpmaskRegister k2, OpmaskRegister k3) {
+    kinstr(0x47, k1, k2, k3, k66, k0F, kW0);
+  }
+  void kxorw(OpmaskRegister k1, OpmaskRegister k2, OpmaskRegister k3) {
+    kinstr(0x47, k1, k2, k3, kNone, k0F, kW0);
+  }
+  void kxord(OpmaskRegister k1, OpmaskRegister k2, OpmaskRegister k3) {
+    kinstr(0x47, k1, k2, k3, k66, k0F, kW1);
+  }
+  void kxorq(OpmaskRegister k1, OpmaskRegister k2, OpmaskRegister k3) {
+    kinstr(0x47, k1, k2, k3, kNone, k0F, kW1);
+  }
+
+  void kandnb(OpmaskRegister k1, OpmaskRegister k2, OpmaskRegister k3) {
+    kinstr(0x42, k1, k2, k3, k66, k0F, kW0);
+  }
+  void kandnw(OpmaskRegister k1, OpmaskRegister k2, OpmaskRegister k3) {
+    kinstr(0x42, k1, k2, k3, kNone, k0F, kW0);
+  }
+  void kandnd(OpmaskRegister k1, OpmaskRegister k2, OpmaskRegister k3) {
+    kinstr(0x42, k1, k2, k3, k66, k0F, kW1);
+  }
+  void kandnq(OpmaskRegister k1, OpmaskRegister k2, OpmaskRegister k3) {
+    kinstr(0x42, k1, k2, k3, kNone, k0F, kW1);
+  }
+
+  void kxnorb(OpmaskRegister k1, OpmaskRegister k2, OpmaskRegister k3) {
+    kinstr(0x46, k1, k2, k3, k66, k0F, kW0);
+  }
+  void kxnorw(OpmaskRegister k1, OpmaskRegister k2, OpmaskRegister k3) {
+    kinstr(0x46, k1, k2, k3, kNone, k0F, kW0);
+  }
+  void kxnord(OpmaskRegister k1, OpmaskRegister k2, OpmaskRegister k3) {
+    kinstr(0x46, k1, k2, k3, k66, k0F, kW1);
+  }
+  void kxnorq(OpmaskRegister k1, OpmaskRegister k2, OpmaskRegister k3) {
+    kinstr(0x46, k1, k2, k3, kNone, k0F, kW1);
+  }
+
+  void kshiftlb(OpmaskRegister k1, OpmaskRegister k2, int8_t imm8) {
+    kinstr(0x32, k1, k2, imm8, k66, k0F3A, kW0);
+  }
+  void kshiftlw(OpmaskRegister k1, OpmaskRegister k2, int8_t imm8) {
+    kinstr(0x32, k1, k2, imm8, k66, k0F3A, kW1);
+  }
+  void kshiftld(OpmaskRegister k1, OpmaskRegister k2, int8_t imm8) {
+    kinstr(0x33, k1, k2, imm8, k66, k0F3A, kW0);
+  }
+  void kshiftlq(OpmaskRegister k1, OpmaskRegister k2, int8_t imm8) {
+    kinstr(0x33, k1, k2, imm8, k66, k0F3A, kW1);
+  }
+
+  void kshiftrb(OpmaskRegister k1, OpmaskRegister k2, int8_t imm8) {
+    kinstr(0x30, k1, k2, imm8, k66, k0F3A, kW0);
+  }
+  void kshiftrw(OpmaskRegister k1, OpmaskRegister k2, int8_t imm8) {
+    kinstr(0x30, k1, k2, imm8, k66, k0F3A, kW1);
+  }
+  void kshiftrd(OpmaskRegister k1, OpmaskRegister k2, int8_t imm8) {
+    kinstr(0x31, k1, k2, imm8, k66, k0F3A, kW0);
+  }
+  void kshiftrq(OpmaskRegister k1, OpmaskRegister k2, int8_t imm8) {
+    kinstr(0x31, k1, k2, imm8, k66, k0F3A, kW1);
+  }
+
+  void ktestb(OpmaskRegister k1, OpmaskRegister k2) {
+    kinstr(0x99, k1, k2, k66, k0F, kW0);
+  }
+  void ktestw(OpmaskRegister k1, OpmaskRegister k2) {
+    kinstr(0x99, k1, k2, kNone, k0F, kW0);
+  }
+  void ktestd(OpmaskRegister k1, OpmaskRegister k2) {
+    kinstr(0x99, k1, k2, k66, k0F, kW1);
+  }
+  void ktestq(OpmaskRegister k1, OpmaskRegister k2) {
+    kinstr(0x99, k1, k2, kNone, k0F, kW1);
+  }
+
+  void kortestb(OpmaskRegister k1, OpmaskRegister k2) {
+    kinstr(0x98, k1, k2, k66, k0F, kW0);
+  }
+  void kortestw(OpmaskRegister k1, OpmaskRegister k2) {
+    kinstr(0x98, k1, k2, kNone, k0F, kW0);
+  }
+  void kortestd(OpmaskRegister k1, OpmaskRegister k2) {
+    kinstr(0x98, k1, k2, k66, k0F, kW1);
+  }
+  void kortestq(OpmaskRegister k1, OpmaskRegister k2) {
+    kinstr(0x98, k1, k2, kNone, k0F, kW1);
+  }
+
+  void kunpckbw(OpmaskRegister k1, OpmaskRegister k2, OpmaskRegister k3) {
+    kinstr(0x4B, k1, k2, k3, k66, k0F, kW0);
+  }
+  void kunpckwd(OpmaskRegister k1, OpmaskRegister k2, OpmaskRegister k3) {
+    kinstr(0x4B, k1, k2, k3, kNone, k0F, kW0);
+  }
+  void kunpckdq(OpmaskRegister k1, OpmaskRegister k2, OpmaskRegister k3) {
+    kinstr(0x4B, k1, k2, k3, kNone, k0F, kW1);
+  }
+
+  void kaddb(OpmaskRegister k1, OpmaskRegister k2, OpmaskRegister k3) {
+    kinstr(0x4A, k1, k2, k3, k66, k0F, kW0);
+  }
+  void kaddw(OpmaskRegister k1, OpmaskRegister k2, OpmaskRegister k3) {
+    kinstr(0x4A, k1, k2, k3, kNone, k0F, kW0);
+  }
+  void kaddd(OpmaskRegister k1, OpmaskRegister k2, OpmaskRegister k3) {
+    kinstr(0x4A, k1, k2, k3, k66, k0F, kW1);
+  }
+  void kaddq(OpmaskRegister k1, OpmaskRegister k2, OpmaskRegister k3) {
+    kinstr(0x4A, k1, k2, k3, kNone, k0F, kW1);
+  }
+
+  void kinstr(byte op, OpmaskRegister k1, OpmaskRegister k2,
+              OpmaskRegister k3, SIMDPrefix pp, LeadingOpcode m, VexW w);
+  void kinstr(byte op, OpmaskRegister k1, OpmaskRegister k2,
+              SIMDPrefix pp, LeadingOpcode m, VexW w);
+  void kinstr(byte op, OpmaskRegister k1, OpmaskRegister k2, int8_t imm8,
+              SIMDPrefix pp, LeadingOpcode m, VexW w);
+  void kinstr(byte op, OpmaskRegister k1, const Operand &src,
+              SIMDPrefix pp, LeadingOpcode m, VexW w);
+  void kinstr(byte op, const Operand &dst, OpmaskRegister k1,
+              SIMDPrefix pp, LeadingOpcode m, VexW w);
+  void kinstr(byte op, OpmaskRegister k1, Register src,
+              SIMDPrefix pp, LeadingOpcode m, VexW w);
+  void kinstr(byte op, Register dst, OpmaskRegister k1,
+              SIMDPrefix pp, LeadingOpcode m, VexW w);
 
   // BMI instructions.
   void andnq(Register dst, Register src1, Register src2) {
