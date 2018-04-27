@@ -61,7 +61,8 @@ static bool IsPowerOfTwo32(uint32_t value) {
   return value && !(value & (value - 1));
 }
 
-Operand::Operand(Register base, int32_t disp) : rex_(0) {
+Operand::Operand(Register base, int32_t disp, LoadMode load)
+    : rex_(0), load_(load) {
   len_ = 1;
   if (base.is(rsp) || base.is(r12)) {
     // SIB byte is needed to encode (rsp + offset) or (r12 + offset).
@@ -82,7 +83,8 @@ Operand::Operand(Register base, int32_t disp) : rex_(0) {
 Operand::Operand(Register base,
                  Register index,
                  ScaleFactor scale,
-                 int32_t disp) : rex_(0) {
+                 int32_t disp,
+                 LoadMode load) : rex_(0), load_(load) {
   DCHECK(!index.is(rsp));
   len_ = 1;
   set_sib(scale, index, base);
@@ -101,7 +103,8 @@ Operand::Operand(Register base,
 
 Operand::Operand(Register index,
                  ScaleFactor scale,
-                 int32_t disp) : rex_(0) {
+                 int32_t disp,
+                 LoadMode load) : rex_(0), load_(load) {
   DCHECK(!index.is(rsp));
   len_ = 1;
   set_modrm(0, rsp);
@@ -109,7 +112,7 @@ Operand::Operand(Register index,
   set_disp32(disp);
 }
 
-Operand::Operand(Label *label) : rex_(0), len_(1) {
+Operand::Operand(Label *label, LoadMode load) : rex_(0), len_(1), load_(load) {
   DCHECK(label != nullptr);
   set_modrm(0, rbp);
   set_disp64(reinterpret_cast<intptr_t>(label));
@@ -159,6 +162,7 @@ Operand::Operand(const Operand &operand, int32_t offset) {
   if (has_sib) {
     buf_[1] = operand.buf_[1];
   }
+  load_ = operand.load_;
 }
 
 Assembler::Assembler(void *buffer, int buffer_size)
@@ -4281,6 +4285,108 @@ void Assembler::pshufd(XMMRegister dst, const Operand &src, uint8_t shuffle) {
   emit(shuffle);
 }
 
+// EVEX prefix format:
+//      7  6  5  4  3  2  0  1
+// P0:  R  X  B  R' 0  0  m  m
+// P1:  W  v  v  v  v  1  p  p
+// P2:  z  L' L  b  V' a  a  a
+void Assembler::emit_evex_prefix(ZMMRegister reg, ZMMRegister vreg,
+                                 ZMMRegister rm, Mask mask, int flags) {
+  byte p0 = 0;
+  byte p1 = 0x04;
+  byte p2 = 0;
+
+  // Leading opcode (mm).
+  if (flags & EVEX_M0F) p0 |= 0x01;
+  if (flags & EVEX_M0F38) p0 |= 0x02;
+  if (flags & EVEX_M0F3A) p0 |= 0x03;
+
+  // Prefix (pp).
+  if (flags & EVEX_P66) p1 |= 0x01;
+  if (flags & EVEX_PF3) p1 |= 0x02;
+  if (flags & EVEX_PF2) p1 |= 0x03;
+
+  // Operation size (L' and L) and width (W).
+  if (!(flags & EVEX_LIG)) p2 |= reg.size_bits() << 5;
+  if (flags & EVEX_W1) p1 |= 0x80;
+
+  // Register specifiers.
+  int rxbr = ((reg.mid_bit() << 3) | (rm.high_bits() << 1) | reg.high_bit());
+  p0 |= (~rxbr & 0x0F) << 4;               // RXBR'
+  p1 |= (~vreg.code() & 0x0F) << 3;        // vvvv
+  p2 |= (~vreg.high_bit() & 0x01) << 3;    // V'
+
+  // Masking (z and aaa).
+  p2 |= (mask.op() << 7) | mask.reg().code();
+
+  // Rounding and exception supression (b).
+  if (flags & EVEX_ER) {
+    // Static rounding; set rounding model in LL.
+    p2 |= 0x10;
+    if (flags & EVEX_R0) p2 |= 0x20;
+    if (flags & EVEX_R1) p2 |= 0x40;
+  } else if (flags & EVEX_SAE) {
+    // Suppress all exceptions.
+    p2 |= 0x10;
+  }
+
+  // Emit four-byte EVEX prefix.
+  emit(0x62);
+  emit(p0);
+  emit(p1);
+  emit(p2);
+}
+
+void Assembler::emit_evex_prefix(ZMMRegister reg, ZMMRegister vreg,
+                                 const Operand &rm, Mask mask, int flags) {
+  byte p0 = 0;
+  byte p1 = 0x04;
+  byte p2 = 0;
+
+  // Leading opcode (mm).
+  if (flags & EVEX_M0F) p0 |= 0x01;
+  if (flags & EVEX_M0F38) p0 |= 0x02;
+  if (flags & EVEX_M0F3A) p0 |= 0x03;
+
+  // Prefix (pp).
+  if (flags & EVEX_P66) p1 |= 0x01;
+  if (flags & EVEX_PF3) p1 |= 0x02;
+  if (flags & EVEX_PF2) p1 |= 0x03;
+
+  // Operation size (L' and L) and width (W).
+  if (!(flags & EVEX_LIG)) p2 |= reg.size_bits() << 5;
+  if (flags & EVEX_W1) p1 |= 0x80;
+
+  // Register specifiers.
+  int rxbr = ((reg.mid_bit() << 3) | (rm.rex_ << 1) | reg.high_bit());
+  p0 |= (~rxbr & 0x0F) << 4;               // RXBR'
+  p1 |= (~vreg.code() & 0x0F) << 3;        // vvvv
+  p2 |= (~vreg.high_bit() & 0x01) << 3;    // V'
+
+  // Masking (z and aaa).
+  p2 |= (mask.op() << 7) | mask.reg().code();
+
+  // Broadcasting, rounding and exception supression (b).
+  if (flags & EVEX_BCST) {
+    // Broadcast memory source operand.
+    if (rm.load() == broadcast) p2 |= 0x10;
+  } else if (flags & EVEX_ER) {
+    // Static rounding; set rounding model in LL.
+    p2 |= 0x10;
+    if (flags & EVEX_R0) p2 |= 0x20;
+    if (flags & EVEX_R1) p2 |= 0x40;
+  } else if (flags & EVEX_SAE) {
+    // Suppress all exceptions.
+    p2 |= 0x10;
+  }
+
+  // Emit four-byte EVEX prefix.
+  emit(0x62);
+  emit(p0);
+  emit(p1);
+  emit(p2);
+}
+
 void Assembler::emit_operand(int code, const Operand &adr, int sl) {
   DCHECK(is_uint3(code));
   const unsigned length = adr.len_;
@@ -4616,6 +4722,22 @@ void Assembler::emit_sse_operand(Register dst, XMMRegister src) {
 
 void Assembler::emit_sse_operand(XMMRegister dst) {
   emit(0xD8 | dst.low_bits());
+}
+
+void Assembler::emit_sse_operand(ZMMRegister dst, ZMMRegister src) {
+  emit(0xC0 | (dst.low_bits() << 3) | src.low_bits());
+}
+
+void Assembler::emit_sse_operand(ZMMRegister reg, const Operand &adr, int sl) {
+  emit_operand(reg.low_bits(), adr, sl);
+}
+
+void Assembler::emit_sse_operand(ZMMRegister dst, Register src) {
+  emit(0xC0 | (dst.low_bits() << 3) | src.low_bits());
+}
+
+void Assembler::emit_sse_operand(Register dst, ZMMRegister src) {
+  emit(0xC0 | (dst.low_bits() << 3) | src.low_bits());
 }
 
 void Assembler::vinstr(byte op, XMMRegister dst, XMMRegister src1,

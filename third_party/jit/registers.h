@@ -322,14 +322,14 @@ struct ZMMRegister {
     return result;
   }
 
-  ZMMRegister zmm(SizeCode size) {
+  ZMMRegister zmm(SizeCode size = VectorLength512) const {
     ZMMRegister result = {code() | size};
     return result;
   }
 
-  ZMMRegister zmm128() { return zmm(VectorLength128); }
-  ZMMRegister zmm256() { return zmm(VectorLength256); }
-  ZMMRegister zmm512() { return zmm(VectorLength512); }
+  ZMMRegister x() const { return zmm(VectorLength128); }
+  ZMMRegister y() const { return zmm(VectorLength256); }
+  ZMMRegister z() const { return zmm(VectorLength512); }
 
   int code() const {
     DCHECK(is_valid());
@@ -338,10 +338,21 @@ struct ZMMRegister {
 
   SizeCode size() const {
     DCHECK(is_valid());
-    return static_cast<SizeCode>(reg_code  | VectorLengthMask);
+    return static_cast<SizeCode>(reg_code  & VectorLengthMask);
   }
 
-  // Register code.
+  int size_bits() const {
+    return reg_code / kMaxNumRegisters;
+  }
+
+  // Return bits of the register code. Used when encoding registers
+  // in modR/M, SIB, and opcode bytes.
+  int low_bits() const { return reg_code & 0x7; }
+  int mid_bit() const { return (reg_code >> 3) & 0x01; }
+  int high_bit() const { return (reg_code >> 4) & 0x01; }
+  int high_bits() const { return (reg_code >> 3) & 0x03; }
+
+  // Register code where the top bits are the size code (ssrrrrr).
   int reg_code;
 };
 

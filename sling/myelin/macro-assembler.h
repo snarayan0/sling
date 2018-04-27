@@ -108,7 +108,7 @@ class Registers {
     1 << jit::Register::kCode_r14 |
     1 << jit::Register::kCode_r15;
 
-  // Bit mask of register that are in use.
+  // Bit mask of registers that are in use.
   int used_regs_;
 
   // Bit mask of registers that should be saved by callee.
@@ -174,7 +174,7 @@ class SIMDRegisters {
   void reset() { used_regs_ = 0; }
 
  private:
-  // Bit mask of register that are in use.
+  // Bit mask of registers that are in use.
   uint32 used_regs_;
 };
 

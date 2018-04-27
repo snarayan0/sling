@@ -70,21 +70,28 @@ enum ScaleFactor {
   times_pointer_size = (kPointerSize == 8) ? times_8 : times_4
 };
 
+enum LoadMode {
+  full = 0,
+  broadcast = 1,
+};
+
 class Operand {
  public:
   // [base + disp/r]
-  explicit Operand(Register base, int32_t disp = 0);
+  explicit Operand(Register base, int32_t disp = 0, LoadMode load = full);
 
   // [base + index*scale + disp/r]
   Operand(Register base,
           Register index,
           ScaleFactor scale = times_1,
-          int32_t disp = 0);
+          int32_t disp = 0,
+          LoadMode load = full);
 
   // [index*scale + disp/r]
   Operand(Register index,
           ScaleFactor scale,
-          int32_t disp = 0);
+          int32_t disp = 0,
+          LoadMode load = full);
 
   // Offset from existing memory operand.
   // Offset is added to existing displacement as 32-bit signed values and
@@ -92,7 +99,7 @@ class Operand {
   Operand(const Operand &base, int32_t offset);
 
   // [rip + disp/r]
-  explicit Operand(Label *label);
+  explicit Operand(Label *label, LoadMode load = full);
 
   // Whether the generated instruction will have a REX prefix.
   bool requires_rex() const { return rex_ != 0; }
@@ -101,10 +108,14 @@ class Operand {
   // instruction.
   int operand_size() const { return len_; }
 
+  // Whather the operand should be broadcast to all destination vector elements.
+  LoadMode load() const { return load_; }
+
  private:
-  byte rex_;     // register extension
-  byte buf_[9];  // operand encoding
-  byte len_;     // operand encoding size
+  byte rex_;       // register extension
+  byte buf_[9];    // operand encoding
+  byte len_;       // operand encoding size
+  LoadMode load_;  // broadcast operand (avx512)
 
   // Set the ModR/M byte without an encoded 'reg' register. The
   // register is encoded later as part of the emit_operand operation.
@@ -157,13 +168,16 @@ class Operand {
 
 // Operation masking.
 enum MaskOp {
-  mask_zero = 0,
-  mask_merge = 1,
+  merging = 0,
+  zeroing = 1,
 };
 
-class Opmask {
+class Mask {
  public:
-  Opmask(OpmaskRegister reg, MaskOp op) : reg_(reg), op_(op) {}
+  Mask(OpmaskRegister reg, MaskOp op) : reg_(reg), op_(op) {}
+
+  OpmaskRegister reg() const { return reg_; }
+  MaskOp op() const { return op_; }
 
  private:
   // Mask register.
@@ -173,7 +187,7 @@ class Opmask {
   MaskOp op_;
 };
 
-const Opmask no_opmask = Opmask(k0, mask_zero);
+const Mask nomask = Mask(k0, merging);
 
 // Assembler for generating Intel x86-64 machine code.
 class Assembler : public CodeGenerator {
@@ -209,6 +223,40 @@ class Assembler : public CodeGenerator {
   enum VectorLength { kL128 = 0x0, kL256 = 0x4, kLIG = kL128, kLZ = kL128 };
   enum VexW { kW0 = 0x0, kW1 = 0x80, kWIG = kW0 };
   enum LeadingOpcode { k0F = 0x1, k0F38 = 0x2, k0F3A = 0x3 };
+
+  // EVEX prefix encodings.
+  enum EvexFlags {
+    EVEX_ENDS  = (1 << 0),   // non-destructive source
+    EVEX_ENDD  = (1 << 1),   // non-destructive destination
+    EVEX_EDDS  = (1 << 2),   // destructive destination and source
+
+    EVEX_LIG   = (1 << 3),   // EVEX.LL ignored
+    EVEX_L128  = (1 << 4),   // EVEX.LL 128-bit operands
+    EVEX_L256  = (1 << 5),   // EVEX.LL 256-bit operands
+    EVEX_L512  = (1 << 6),   // EVEX.LL 512-bit operands
+
+    EVEX_P66   = (1 << 7),   // EVEX.PP 0x66 prefix
+    EVEX_PF2   = (1 << 8),   // EVEX.PP 0xF2 prefix
+    EVEX_PF3   = (1 << 9),   // EVEX.PP 0xF3 prefix
+
+    EVEX_M0F   = (1 << 10),  // VEX.MM 0x0F leading opcode
+    EVEX_M0F38 = (1 << 11),  // VEX.MM 0x0F38 leading opcode
+    EVEX_M0F3A = (1 << 12),  // VEX.MM 0x0F3A leading opcode
+
+    EVEX_W0    = (1 << 13),  // EVEX.W=0
+    EVEX_W1    = (1 << 14),  // EVEX.W=1
+    EVEX_WIG   = (1 << 15),  // EVEX.W ignored
+
+    EVEX_BCST  = (1 << 16),  // EVEX.B broadcast
+    EVEX_ER    = (1 << 17),  // static-rounding
+    EVEX_SAE   = (1 << 18),  // suppress all exceptions
+
+    EVEX_ZERO  = (1 << 19),  // EVEX.Z zeroing
+    EVEX_IMM   = (1 << 20),  // immediate operand
+
+    EVEX_R0    = (1 << 21),  // rounding mode bit 0
+    EVEX_R1    = (1 << 22),  // rounding mode bit 1
+  };
 
   // Code generation
   //
@@ -2662,6 +2710,9 @@ class Assembler : public CodeGenerator {
     kinstr(0x4A, k1, k2, k3, kNone, k0F, kW1);
   }
 
+  // AVX-512F instructions.
+  #include "third_party/jit/avx512.h"
+
   // BMI instructions.
   void andnq(Register dst, Register src1, Register src2) {
     bmi1q(0xf2, dst, src1, src2);
@@ -3034,7 +3085,7 @@ class Assembler : public CodeGenerator {
     }
   }
 
-  // Emit vex prefix.
+  // Emit VEX prefix.
   void emit_vex2_byte0() { emit(0xc5); }
 
   void emit_vex2_byte1(XMMRegister reg, XMMRegister v, VectorLength l,
@@ -3101,6 +3152,12 @@ class Assembler : public CodeGenerator {
     emit_vex_prefix(ireg, ivreg, rm, l, pp, mm, w);
   }
 
+  // Emit EVEX prefix.
+  void emit_evex_prefix(ZMMRegister reg, ZMMRegister vreg, ZMMRegister rm,
+                        Mask mask, int flags);
+  void emit_evex_prefix(ZMMRegister reg, ZMMRegister vreg, const Operand &rm,
+                        Mask mask, int flags);
+
   // Emit the ModR/M byte, and optionally the SIB byte and
   // 1- or 4-byte offset for a memory operand.  Also encodes
   // the second operand of the operation, a register or operation
@@ -3136,6 +3193,11 @@ class Assembler : public CodeGenerator {
   void emit_sse_operand(XMMRegister dst, Register src);
   void emit_sse_operand(Register dst, XMMRegister src);
   void emit_sse_operand(XMMRegister dst);
+
+  void emit_sse_operand(ZMMRegister dst, ZMMRegister src);
+  void emit_sse_operand(ZMMRegister reg, const Operand &adr, int sl = 0);
+  void emit_sse_operand(ZMMRegister dst, Register src);
+  void emit_sse_operand(Register dst, ZMMRegister src);
 
   // Emit machine code for one of the operations ADD, ADC, SUB, SBC,
   // AND, OR, XOR, or CMP.  The encodings of these operations are all
@@ -3465,6 +3527,103 @@ class Assembler : public CodeGenerator {
               SIMDPrefix pp, LeadingOpcode m, VexW w);
   void kinstr(byte op, Register dst, OpmaskRegister k1,
               SIMDPrefix pp, LeadingOpcode m, VexW w);
+
+  // AVX-512 instruction encoding.
+  static int evex_round(RoundingMode er) { return er * EVEX_R0; }
+
+  void zinstr(byte op, ZMMRegister dst, ZMMRegister src,
+              int8_t imm8, Mask mask, int flags) {
+    emit_evex_prefix(dst, zmm0, src, mask, flags);
+    emit(op);
+    emit_sse_operand(dst, src);
+    if (flags & EVEX_IMM) emit(imm8);
+  }
+  void zinstr(byte op, ZMMRegister dst, const Operand &src,
+              int8_t imm8, Mask mask, int flags) {
+    emit_evex_prefix(dst, zmm0, src, mask, flags);
+    emit(op);
+    emit_sse_operand(dst, src, (flags & EVEX_IMM) ? 1 : 0);
+    if (flags & EVEX_IMM) emit(imm8);
+  }
+  void zinstr(byte op, const Operand &dst, ZMMRegister src,
+              int8_t imm8, Mask mask, int flags) {
+    emit_evex_prefix(src, zmm0, dst, mask, flags);
+    emit(op);
+    emit_sse_operand(src, dst, (flags & EVEX_IMM) ? 1 : 0);
+    if (flags & EVEX_IMM) emit(imm8);
+  }
+
+  void zinstr(byte op, ZMMRegister dst, ZMMRegister src1, ZMMRegister src2,
+              int8_t imm8, Mask mask, int flags) {
+    emit_evex_prefix(dst, src1, src2, mask, flags);
+    emit(op);
+    emit_sse_operand(dst, src2);
+    if (flags & EVEX_IMM) emit(imm8);
+  }
+  void zinstr(byte op, ZMMRegister dst, ZMMRegister src1, const Operand &src2,
+              int8_t imm8, Mask mask, int flags) {
+    emit_evex_prefix(dst, src1, src2, mask, flags);
+    emit(op);
+    emit_sse_operand(dst, src2, (flags & EVEX_IMM) ? 1 : 0);
+    if (flags & EVEX_IMM) emit(imm8);
+  }
+  void zinstr(byte op, const Operand &dst, ZMMRegister src1, ZMMRegister src2,
+              int8_t imm8, Mask mask, int flags) {
+    emit_evex_prefix(src2, src1, dst, mask, flags);
+    emit(op);
+    emit_sse_operand(src2, dst, (flags & EVEX_IMM) ? 1 : 0);
+    if (flags & EVEX_IMM) emit(imm8);
+  }
+
+  void zinstr(byte op, ZMMRegister dst, ZMMRegister src1, Register src2,
+              int8_t imm8, Mask mask, int flags) {
+    ZMMRegister isrc2 = ZMMRegister::from_code(src2.code());
+    emit_evex_prefix(dst, src1, isrc2, mask, flags);
+    emit(op);
+    emit_sse_operand(dst, isrc2);
+    if (flags & EVEX_IMM) emit(imm8);
+  }
+  void zinstr(byte op, ZMMRegister dst, Register src,
+              int8_t imm8, Mask mask, int flags) {
+    ZMMRegister isrc = ZMMRegister::from_code(src.code());
+    emit_evex_prefix(dst, zmm0, isrc, mask, flags);
+    emit(op);
+    emit_sse_operand(dst, isrc);
+    if (flags & EVEX_IMM) emit(imm8);
+  }
+  void zinstr(byte op, Register dst, ZMMRegister src,
+              int8_t imm8, Mask mask, int flags) {
+    ZMMRegister idst = ZMMRegister::from_code(dst.code());
+    emit_evex_prefix(idst, zmm0, src, mask, flags);
+    emit(op);
+    emit_sse_operand(idst, src);
+    if (flags & EVEX_IMM) emit(imm8);
+  }
+  void zinstr(byte op, Register dst, const Operand &src,
+              int8_t imm8, Mask mask, int flags) {
+    ZMMRegister idst = ZMMRegister::from_code(dst.code());
+    emit_evex_prefix(idst, zmm0, src, mask, flags);
+    emit(op);
+    emit_sse_operand(idst, src, (flags & EVEX_IMM) ? 1 : 0);
+    if (flags & EVEX_IMM) emit(imm8);
+  }
+
+  void zinstr(byte op, OpmaskRegister k, ZMMRegister src1, ZMMRegister src2,
+              int8_t imm8, Mask mask, int flags) {
+    ZMMRegister ik = ZMMRegister::from_code(k.code());
+    emit_evex_prefix(ik, src1, src2, mask, flags);
+    emit(op);
+    emit_sse_operand(ik, src2);
+    if (flags & EVEX_IMM) emit(imm8);
+  }
+  void zinstr(byte op, OpmaskRegister k, ZMMRegister src1, const Operand &src2,
+              int8_t imm8, Mask mask, int flags) {
+    ZMMRegister ik = ZMMRegister::from_code(k.code());
+    emit_evex_prefix(ik, src1, src2, mask, flags);
+    emit(op);
+    emit_sse_operand(ik, src2, (flags & EVEX_IMM) ? 1 : 0);
+    if (flags & EVEX_IMM) emit(imm8);
+  }
 
   // BMI instruction encoding.
   void bmi1q(byte op, Register reg, Register vreg, Register rm);
