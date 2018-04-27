@@ -5038,6 +5038,126 @@ void Assembler::kinstr(byte op, Register dst, OpmaskRegister k1,
   emit_sse_operand(idst, ik1);
 }
 
+void Assembler::zinstr(byte op, ZMMRegister dst, ZMMRegister src,
+                       int8_t imm8, Mask mask, int flags) {
+  EnsureSpace ensure_space(this);
+  emit_evex_prefix(dst, zmm0, src, mask, flags);
+  emit(op);
+  emit_sse_operand(dst, src);
+  if (flags & EVEX_IMM) emit(imm8);
+}
+
+void Assembler::zinstr(byte op, ZMMRegister dst, const Operand &src,
+                       int8_t imm8, Mask mask, int flags) {
+  EnsureSpace ensure_space(this);
+  emit_evex_prefix(dst, zmm0, src, mask, flags);
+  emit(op);
+  emit_sse_operand(dst, src, (flags & EVEX_IMM) ? 1 : 0);
+  if (flags & EVEX_IMM) emit(imm8);
+}
+
+void Assembler::zinstr(byte op, const Operand &dst, ZMMRegister src,
+                       int8_t imm8, Mask mask, int flags) {
+  EnsureSpace ensure_space(this);
+  emit_evex_prefix(src, zmm0, dst, mask, flags);
+  emit(op);
+  emit_sse_operand(src, dst, (flags & EVEX_IMM) ? 1 : 0);
+  if (flags & EVEX_IMM) emit(imm8);
+}
+
+void Assembler::zinstr(byte op, ZMMRegister dst, ZMMRegister src1,
+                       ZMMRegister src2,
+                       int8_t imm8, Mask mask, int flags) {
+  EnsureSpace ensure_space(this);
+  emit_evex_prefix(dst, src1, src2, mask, flags);
+  emit(op);
+  emit_sse_operand(dst, src2);
+  if (flags & EVEX_IMM) emit(imm8);
+}
+
+void Assembler::zinstr(byte op, ZMMRegister dst, ZMMRegister src1,
+                       const Operand &src2,
+                       int8_t imm8, Mask mask, int flags) {
+  EnsureSpace ensure_space(this);
+  emit_evex_prefix(dst, src1, src2, mask, flags);
+  emit(op);
+  emit_sse_operand(dst, src2, (flags & EVEX_IMM) ? 1 : 0);
+  if (flags & EVEX_IMM) emit(imm8);
+}
+
+void Assembler::zinstr(byte op, const Operand &dst, ZMMRegister src1,
+                       ZMMRegister src2,
+                       int8_t imm8, Mask mask, int flags) {
+  EnsureSpace ensure_space(this);
+  emit_evex_prefix(src2, src1, dst, mask, flags);
+  emit(op);
+  emit_sse_operand(src2, dst, (flags & EVEX_IMM) ? 1 : 0);
+  if (flags & EVEX_IMM) emit(imm8);
+}
+
+void Assembler::zinstr(byte op, ZMMRegister dst, ZMMRegister src1,
+                       Register src2,
+                       int8_t imm8, Mask mask, int flags) {
+  EnsureSpace ensure_space(this);
+  ZMMRegister isrc2 = ZMMRegister::from_code(src2.code());
+  emit_evex_prefix(dst, src1, isrc2, mask, flags);
+  emit(op);
+  emit_sse_operand(dst, isrc2);
+  if (flags & EVEX_IMM) emit(imm8);
+}
+
+void Assembler::zinstr(byte op, ZMMRegister dst, Register src,
+                       int8_t imm8, Mask mask, int flags) {
+  EnsureSpace ensure_space(this);
+  ZMMRegister isrc = ZMMRegister::from_code(src.code());
+  emit_evex_prefix(dst, zmm0, isrc, mask, flags);
+  emit(op);
+  emit_sse_operand(dst, isrc);
+  if (flags & EVEX_IMM) emit(imm8);
+}
+
+void Assembler::zinstr(byte op, Register dst, ZMMRegister src,
+                        int8_t imm8, Mask mask, int flags) {
+  EnsureSpace ensure_space(this);
+  ZMMRegister idst = ZMMRegister::from_code(dst.code());
+  emit_evex_prefix(idst, zmm0, src, mask, flags);
+  emit(op);
+  emit_sse_operand(idst, src);
+  if (flags & EVEX_IMM) emit(imm8);
+}
+
+void Assembler::zinstr(byte op, Register dst, const Operand &src,
+                       int8_t imm8, Mask mask, int flags) {
+  EnsureSpace ensure_space(this);
+  ZMMRegister idst = ZMMRegister::from_code(dst.code());
+  emit_evex_prefix(idst, zmm0, src, mask, flags);
+  emit(op);
+  emit_sse_operand(idst, src, (flags & EVEX_IMM) ? 1 : 0);
+  if (flags & EVEX_IMM) emit(imm8);
+}
+
+void Assembler::zinstr(byte op, OpmaskRegister k, ZMMRegister src1,
+                       ZMMRegister src2,
+                       int8_t imm8, Mask mask, int flags) {
+  EnsureSpace ensure_space(this);
+  ZMMRegister ik = ZMMRegister::from_code(k.code());
+  emit_evex_prefix(ik, src1, src2, mask, flags);
+  emit(op);
+  emit_sse_operand(ik, src2);
+  if (flags & EVEX_IMM) emit(imm8);
+}
+
+void Assembler::zinstr(byte op, OpmaskRegister k, ZMMRegister src1,
+                       const Operand &src2,
+                       int8_t imm8, Mask mask, int flags) {
+  EnsureSpace ensure_space(this);
+  ZMMRegister ik = ZMMRegister::from_code(k.code());
+  emit_evex_prefix(ik, src1, src2, mask, flags);
+  emit(op);
+  emit_sse_operand(ik, src2, (flags & EVEX_IMM) ? 1 : 0);
+  if (flags & EVEX_IMM) emit(imm8);
+}
+
 void Assembler::db(uint8_t data) {
   EnsureSpace ensure_space(this);
   emit(data);

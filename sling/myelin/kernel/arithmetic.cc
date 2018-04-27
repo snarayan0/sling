@@ -246,7 +246,8 @@ struct Expression {
       CHECK(expr.AllocateRegisters()) << "Register overflow";
 
       // Count the number of spare SIMD registers.
-      while (masm.mm().try_alloc() != -1) spare_regs++;
+      bool extended = expr.index.extended_regs();
+      while (masm.mm().try_alloc(extended) != -1) spare_regs++;
     }
     return spare_regs;
   }

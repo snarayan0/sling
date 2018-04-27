@@ -63,6 +63,7 @@ DEFINE_bool(lock, true, "Locked gradient updates");
 DEFINE_int32(lexthres, 0, "Lexicon threshold");
 DEFINE_string(flow, "", "Flow file for saving trained POS tagger");
 DEFINE_bool(adam, false, "Use Adam optimizer");
+DEFINE_bool(avx512, false, "Enable AVX-512 code generation");
 
 using namespace sling;
 using namespace sling::myelin;
@@ -577,6 +578,8 @@ class Tagger {
 
 int main(int argc, char *argv[]) {
   InitProgram(&argc, &argv);
+
+  if (FLAGS_avx512) jit::CPU::Enable(jit::AVX512F);
 
   Tagger tagger;
   tagger.ReadCorpora();

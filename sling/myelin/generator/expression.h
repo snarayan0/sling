@@ -31,12 +31,15 @@ class ExpressionGenerator {
   typedef jit::Operand Operand;
   typedef jit::Register Register;
   typedef jit::Immediate Immediate;
+  typedef jit::Mask Mask;
   typedef jit::XMMRegister XMMRegister;
   typedef jit::YMMRegister YMMRegister;
+  typedef jit::ZMMRegister ZMMRegister;
 
   // Register sizes in bytes.
   const static int XMMRegSize = 16;
   const static int YMMRegSize = 32;
+  const static int ZMMRegSize = 64;
 
   virtual ~ExpressionGenerator() = default;
 
@@ -45,6 +48,9 @@ class ExpressionGenerator {
 
   // Return vector size in bytes.
   virtual int VectorSize() { return TypeTraits::of(type_).size(); }
+
+  // Check if generator can use extended SIMD registers.
+  virtual bool ExtendedRegs() { return false; }
 
   // Whether instruction model supports immediate operands.
   virtual bool ImmediateOperands() { return false; }
@@ -169,6 +175,39 @@ class ExpressionGenerator {
                                                const Operand &,
                                                int8);
 
+  typedef void (Assembler::*OpZMMRegReg)(ZMMRegister,
+                                         ZMMRegister,
+                                         Mask);
+  typedef void (Assembler::*OpZMMRegMem)(ZMMRegister,
+                                         const Operand &,
+                                         Mask);
+  typedef void (Assembler::*OpZMMRegRegImm)(ZMMRegister,
+                                            ZMMRegister,
+                                            int8,
+                                            Mask);
+  typedef void (Assembler::*OpZMMRegMemImm)(ZMMRegister,
+                                            const Operand &,
+                                            int8,
+                                            Mask);
+  typedef void (Assembler::*OpZMMRegRegReg)(ZMMRegister,
+                                            ZMMRegister,
+                                            ZMMRegister,
+                                            Mask);
+  typedef void (Assembler::*OpZMMRegRegRegImm)(ZMMRegister,
+                                               ZMMRegister,
+                                               ZMMRegister,
+                                               int8,
+                                               Mask);
+  typedef void (Assembler::*OpZMMRegRegMem)(ZMMRegister,
+                                            ZMMRegister,
+                                            const Operand &,
+                                            Mask);
+  typedef void (Assembler::*OpZMMRegRegMemImm)(ZMMRegister,
+                                               ZMMRegister,
+                                               const Operand &,
+                                               int8,
+                                               Mask);
+
   // Check if size is a multiple of the vector size.
   static bool IsVector(int size, int vecsize) {
     return size > 1 && size % vecsize == 0;
@@ -189,11 +228,13 @@ class ExpressionGenerator {
   Register reg(int idx) { return index_->reg(idx); }
   XMMRegister xmm(int idx) { return index_->xmm(idx); }
   YMMRegister ymm(int idx) { return index_->ymm(idx); }
+  ZMMRegister zmm(int idx) { return index_->zmm(idx); }
 
   // Return register for auxiliary variable.
   Register aux(int idx) { return index_->aux(idx); }
   XMMRegister xmmaux(int idx) { return index_->xmmaux(idx); }
   YMMRegister ymmaux(int idx) { return index_->ymmaux(idx); }
+  ZMMRegister zmmaux(int idx) { return index_->zmmaux(idx); }
 
   // Generate XMM scalar float move.
   void GenerateXMMScalarFltMove(Express::Op *instr, MacroAssembler *masm);
@@ -207,6 +248,13 @@ class ExpressionGenerator {
 
   // Generate YMM vector move.
   void GenerateYMMVectorMove(Express::Op *instr, MacroAssembler *masm);
+
+  // Generate move of ZMM vector operand to register.
+  void GenerateZMMMoveMemToReg(ZMMRegister dst, const Operand &src,
+                               MacroAssembler *masm);
+
+  // Generate ZMM vector move.
+  void GenerateZMMVectorMove(Express::Op *instr, MacroAssembler *masm);
 
   // Generate move of x64 operand to register.
   void GenerateIntMoveMemToReg(Register dst, const Operand &src,
@@ -297,6 +345,28 @@ class ExpressionGenerator {
       OpYMMRegRegRegImm fltopreg, OpYMMRegRegRegImm dblopreg,
       OpYMMRegRegMemImm fltopmem, OpYMMRegRegMemImm dblopmem,
       int8 imm,
+      MacroAssembler *masm, int argnum = 1);
+
+  // Generate two-operand ZMM float op.
+  void GenerateZMMFltOp(
+      Express::Op *instr,
+      OpZMMRegReg fltopreg, OpZMMRegReg dblopreg,
+      OpZMMRegMem fltopmem, OpZMMRegMem dblopmem,
+      MacroAssembler *masm, int argnum = 0);
+
+  // Generate two-operand ZMM float op with immediate.
+  void GenerateZMMFltOp(
+      Express::Op *instr,
+      OpZMMRegRegImm fltopreg, OpZMMRegRegImm dblopreg,
+      OpZMMRegMemImm fltopmem, OpZMMRegMemImm dblopmem,
+      int8 imm,
+      MacroAssembler *masm, int argnum = 0);
+
+  // Generate three-operand ZMM float op.
+  void GenerateZMMFltOp(
+      Express::Op *instr,
+      OpZMMRegRegReg fltopreg, OpZMMRegRegReg dblopreg,
+      OpZMMRegRegMem fltopmem, OpZMMRegRegMem dblopmem,
       MacroAssembler *masm, int argnum = 1);
 
   // Generate one-operand x64 int op.

@@ -3532,98 +3532,29 @@ class Assembler : public CodeGenerator {
   static int evex_round(RoundingMode er) { return er * EVEX_R0; }
 
   void zinstr(byte op, ZMMRegister dst, ZMMRegister src,
-              int8_t imm8, Mask mask, int flags) {
-    emit_evex_prefix(dst, zmm0, src, mask, flags);
-    emit(op);
-    emit_sse_operand(dst, src);
-    if (flags & EVEX_IMM) emit(imm8);
-  }
+              int8_t imm8, Mask mask, int flags);
   void zinstr(byte op, ZMMRegister dst, const Operand &src,
-              int8_t imm8, Mask mask, int flags) {
-    emit_evex_prefix(dst, zmm0, src, mask, flags);
-    emit(op);
-    emit_sse_operand(dst, src, (flags & EVEX_IMM) ? 1 : 0);
-    if (flags & EVEX_IMM) emit(imm8);
-  }
+              int8_t imm8, Mask mask, int flags);
   void zinstr(byte op, const Operand &dst, ZMMRegister src,
-              int8_t imm8, Mask mask, int flags) {
-    emit_evex_prefix(src, zmm0, dst, mask, flags);
-    emit(op);
-    emit_sse_operand(src, dst, (flags & EVEX_IMM) ? 1 : 0);
-    if (flags & EVEX_IMM) emit(imm8);
-  }
-
+              int8_t imm8, Mask mask, int flags);
   void zinstr(byte op, ZMMRegister dst, ZMMRegister src1, ZMMRegister src2,
-              int8_t imm8, Mask mask, int flags) {
-    emit_evex_prefix(dst, src1, src2, mask, flags);
-    emit(op);
-    emit_sse_operand(dst, src2);
-    if (flags & EVEX_IMM) emit(imm8);
-  }
+              int8_t imm8, Mask mask, int flags);
   void zinstr(byte op, ZMMRegister dst, ZMMRegister src1, const Operand &src2,
-              int8_t imm8, Mask mask, int flags) {
-    emit_evex_prefix(dst, src1, src2, mask, flags);
-    emit(op);
-    emit_sse_operand(dst, src2, (flags & EVEX_IMM) ? 1 : 0);
-    if (flags & EVEX_IMM) emit(imm8);
-  }
+              int8_t imm8, Mask mask, int flags);
   void zinstr(byte op, const Operand &dst, ZMMRegister src1, ZMMRegister src2,
-              int8_t imm8, Mask mask, int flags) {
-    emit_evex_prefix(src2, src1, dst, mask, flags);
-    emit(op);
-    emit_sse_operand(src2, dst, (flags & EVEX_IMM) ? 1 : 0);
-    if (flags & EVEX_IMM) emit(imm8);
-  }
-
+              int8_t imm8, Mask mask, int flags);
   void zinstr(byte op, ZMMRegister dst, ZMMRegister src1, Register src2,
-              int8_t imm8, Mask mask, int flags) {
-    ZMMRegister isrc2 = ZMMRegister::from_code(src2.code());
-    emit_evex_prefix(dst, src1, isrc2, mask, flags);
-    emit(op);
-    emit_sse_operand(dst, isrc2);
-    if (flags & EVEX_IMM) emit(imm8);
-  }
+              int8_t imm8, Mask mask, int flags);
   void zinstr(byte op, ZMMRegister dst, Register src,
-              int8_t imm8, Mask mask, int flags) {
-    ZMMRegister isrc = ZMMRegister::from_code(src.code());
-    emit_evex_prefix(dst, zmm0, isrc, mask, flags);
-    emit(op);
-    emit_sse_operand(dst, isrc);
-    if (flags & EVEX_IMM) emit(imm8);
-  }
+              int8_t imm8, Mask mask, int flags);
   void zinstr(byte op, Register dst, ZMMRegister src,
-              int8_t imm8, Mask mask, int flags) {
-    ZMMRegister idst = ZMMRegister::from_code(dst.code());
-    emit_evex_prefix(idst, zmm0, src, mask, flags);
-    emit(op);
-    emit_sse_operand(idst, src);
-    if (flags & EVEX_IMM) emit(imm8);
-  }
+              int8_t imm8, Mask mask, int flags);
   void zinstr(byte op, Register dst, const Operand &src,
-              int8_t imm8, Mask mask, int flags) {
-    ZMMRegister idst = ZMMRegister::from_code(dst.code());
-    emit_evex_prefix(idst, zmm0, src, mask, flags);
-    emit(op);
-    emit_sse_operand(idst, src, (flags & EVEX_IMM) ? 1 : 0);
-    if (flags & EVEX_IMM) emit(imm8);
-  }
-
+              int8_t imm8, Mask mask, int flags);
   void zinstr(byte op, OpmaskRegister k, ZMMRegister src1, ZMMRegister src2,
-              int8_t imm8, Mask mask, int flags) {
-    ZMMRegister ik = ZMMRegister::from_code(k.code());
-    emit_evex_prefix(ik, src1, src2, mask, flags);
-    emit(op);
-    emit_sse_operand(ik, src2);
-    if (flags & EVEX_IMM) emit(imm8);
-  }
+              int8_t imm8, Mask mask, int flags);
   void zinstr(byte op, OpmaskRegister k, ZMMRegister src1, const Operand &src2,
-              int8_t imm8, Mask mask, int flags) {
-    ZMMRegister ik = ZMMRegister::from_code(k.code());
-    emit_evex_prefix(ik, src1, src2, mask, flags);
-    emit(op);
-    emit_sse_operand(ik, src2, (flags & EVEX_IMM) ? 1 : 0);
-    if (flags & EVEX_IMM) emit(imm8);
-  }
+              int8_t imm8, Mask mask, int flags);
 
   // BMI instruction encoding.
   void bmi1q(byte op, Register reg, Register vreg, Register rm);
