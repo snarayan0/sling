@@ -1521,16 +1521,16 @@ void vporq(ZMMRegister dst, ZMMRegister src1, const Operand &src2, Mask mask = n
   zinstr(0xEB, dst, src1, src2, 0, mask, EVEX_BCST | EVEX_ENDS | EVEX_L128 | EVEX_L256 | EVEX_L512 | EVEX_M0F | EVEX_P66 | EVEX_W1);
 }
 void vprold(ZMMRegister dst, ZMMRegister src, int8_t imm8, Mask mask = nomask) {
-  zinstr(0x72, dst, src, imm8, mask, EVEX_BCST | EVEX_ENDD | EVEX_IMM | EVEX_L128 | EVEX_L256 | EVEX_L512 | EVEX_M0F | EVEX_P66 | EVEX_W0);
+  zinstr(0x72, zmm1, dst, src, imm8, mask, EVEX_BCST | EVEX_ENDD | EVEX_IMM | EVEX_L128 | EVEX_L256 | EVEX_L512 | EVEX_M0F | EVEX_P66 | EVEX_W0);
 }
 void vprold(ZMMRegister dst, const Operand &src, int8_t imm8, Mask mask = nomask) {
-  zinstr(0x72, dst, src, imm8, mask, EVEX_BCST | EVEX_ENDD | EVEX_IMM | EVEX_L128 | EVEX_L256 | EVEX_L512 | EVEX_M0F | EVEX_P66 | EVEX_W0);
+  zinstr(0x72, zmm1, dst, src, imm8, mask, EVEX_BCST | EVEX_ENDD | EVEX_IMM | EVEX_L128 | EVEX_L256 | EVEX_L512 | EVEX_M0F | EVEX_P66 | EVEX_W0);
 }
 void vprolq(ZMMRegister dst, ZMMRegister src, int8_t imm8, Mask mask = nomask) {
-  zinstr(0x72, dst, src, imm8, mask, EVEX_BCST | EVEX_ENDD | EVEX_IMM | EVEX_L128 | EVEX_L256 | EVEX_L512 | EVEX_M0F | EVEX_P66 | EVEX_W1);
+  zinstr(0x72, zmm1, dst, src, imm8, mask, EVEX_BCST | EVEX_ENDD | EVEX_IMM | EVEX_L128 | EVEX_L256 | EVEX_L512 | EVEX_M0F | EVEX_P66 | EVEX_W1);
 }
 void vprolq(ZMMRegister dst, const Operand &src, int8_t imm8, Mask mask = nomask) {
-  zinstr(0x72, dst, src, imm8, mask, EVEX_BCST | EVEX_ENDD | EVEX_IMM | EVEX_L128 | EVEX_L256 | EVEX_L512 | EVEX_M0F | EVEX_P66 | EVEX_W1);
+  zinstr(0x72, zmm1, dst, src, imm8, mask, EVEX_BCST | EVEX_ENDD | EVEX_IMM | EVEX_L128 | EVEX_L256 | EVEX_L512 | EVEX_M0F | EVEX_P66 | EVEX_W1);
 }
 void vprolvd(ZMMRegister dst, ZMMRegister src1, ZMMRegister src2, Mask mask = nomask) {
   zinstr(0x15, dst, src1, src2, 0, mask, EVEX_BCST | EVEX_ENDS | EVEX_L128 | EVEX_L256 | EVEX_L512 | EVEX_M0F38 | EVEX_P66 | EVEX_W0);
@@ -1545,16 +1545,16 @@ void vprolvq(ZMMRegister dst, ZMMRegister src1, const Operand &src2, Mask mask =
   zinstr(0x15, dst, src1, src2, 0, mask, EVEX_BCST | EVEX_ENDS | EVEX_L128 | EVEX_L256 | EVEX_L512 | EVEX_M0F38 | EVEX_P66 | EVEX_W1);
 }
 void vprord(ZMMRegister dst, ZMMRegister src, int8_t imm8, Mask mask = nomask) {
-  zinstr(0x72, dst, src, imm8, mask, EVEX_BCST | EVEX_ENDD | EVEX_IMM | EVEX_L128 | EVEX_L256 | EVEX_L512 | EVEX_M0F | EVEX_P66 | EVEX_W0);
+  zinstr(0x72, zmm0, dst, src, imm8, mask, EVEX_BCST | EVEX_ENDD | EVEX_IMM | EVEX_L128 | EVEX_L256 | EVEX_L512 | EVEX_M0F | EVEX_P66 | EVEX_W0);
 }
 void vprord(ZMMRegister dst, const Operand &src, int8_t imm8, Mask mask = nomask) {
-  zinstr(0x72, dst, src, imm8, mask, EVEX_BCST | EVEX_ENDD | EVEX_IMM | EVEX_L128 | EVEX_L256 | EVEX_L512 | EVEX_M0F | EVEX_P66 | EVEX_W0);
+  zinstr(0x72, zmm0, dst, src, imm8, mask, EVEX_BCST | EVEX_ENDD | EVEX_IMM | EVEX_L128 | EVEX_L256 | EVEX_L512 | EVEX_M0F | EVEX_P66 | EVEX_W0);
 }
 void vprorq(ZMMRegister dst, ZMMRegister src, int8_t imm8, Mask mask = nomask) {
-  zinstr(0x72, dst, src, imm8, mask, EVEX_BCST | EVEX_ENDD | EVEX_IMM | EVEX_L128 | EVEX_L256 | EVEX_L512 | EVEX_M0F | EVEX_P66 | EVEX_W1);
+  zinstr(0x72, zmm0, dst, src, imm8, mask, EVEX_BCST | EVEX_ENDD | EVEX_IMM | EVEX_L128 | EVEX_L256 | EVEX_L512 | EVEX_M0F | EVEX_P66 | EVEX_W1);
 }
 void vprorq(ZMMRegister dst, const Operand &src, int8_t imm8, Mask mask = nomask) {
-  zinstr(0x72, dst, src, imm8, mask, EVEX_BCST | EVEX_ENDD | EVEX_IMM | EVEX_L128 | EVEX_L256 | EVEX_L512 | EVEX_M0F | EVEX_P66 | EVEX_W1);
+  zinstr(0x72, zmm0, dst, src, imm8, mask, EVEX_BCST | EVEX_ENDD | EVEX_IMM | EVEX_L128 | EVEX_L256 | EVEX_L512 | EVEX_M0F | EVEX_P66 | EVEX_W1);
 }
 void vprorvd(ZMMRegister dst, ZMMRegister src1, ZMMRegister src2, Mask mask = nomask) {
   zinstr(0x14, dst, src1, src2, 0, mask, EVEX_BCST | EVEX_ENDS | EVEX_L128 | EVEX_L256 | EVEX_L512 | EVEX_M0F38 | EVEX_P66 | EVEX_W0);
