@@ -143,9 +143,11 @@ class SIMDRegisters {
   }
 
   // Allocate 512-bit ZMM register.
-  jit::ZMMRegister allocz() { return jit::ZMMRegister::from_code(alloc(true)); }
-  jit::ZMMRegister try_allocz() {
-    return jit::ZMMRegister::from_code(try_alloc(true));
+  jit::ZMMRegister allocz(bool extended = true) {
+    return jit::ZMMRegister::from_code(alloc(extended));
+  }
+  jit::ZMMRegister try_allocz(bool extended = true) {
+    return jit::ZMMRegister::from_code(try_alloc(extended));
   }
 
   // Allocate SIMD register.
