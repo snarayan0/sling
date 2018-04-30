@@ -4292,6 +4292,7 @@ void Assembler::pshufd(XMMRegister dst, const Operand &src, uint8_t shuffle) {
 // P2:  z  L' L  b  V' a  a  a
 void Assembler::emit_evex_prefix(ZMMRegister reg, ZMMRegister vreg,
                                  ZMMRegister rm, Mask mask, int flags) {
+  DCHECK(Enabled(AVX512F));
   byte p0 = 0;
   byte p1 = 0x04;
   byte p2 = 0;
@@ -4339,6 +4340,7 @@ void Assembler::emit_evex_prefix(ZMMRegister reg, ZMMRegister vreg,
 
 void Assembler::emit_evex_prefix(ZMMRegister reg, ZMMRegister vreg,
                                  const Operand &rm, Mask mask, int flags) {
+  DCHECK(Enabled(AVX512F));
   byte p0 = 0;
   byte p1 = 0x04;
   byte p2 = 0;
