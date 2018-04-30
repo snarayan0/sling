@@ -506,6 +506,15 @@ void MacroAssembler::Multiply(jit::Register reg, int64 scalar) {
   }
 }
 
+OpmaskRegister MacroAssembler::LoadMask(int n, OpmaskRegister k) {
+  if (!k.is_valid()) k = kk_.alloc();
+  Register r = rr_.alloc();
+  movq(r, Immediate((1 << n) - 1));
+  kmovq(k, r);
+  rr_.release(r);
+  return k;
+}
+
 void MacroAssembler::UpdateCounter(int64 *counter, int64 value) {
   CHECK(!rr_.used(rdi));
   movp(rdi, counter);
@@ -602,6 +611,7 @@ void MacroAssembler::TimeStep(int offset, int disp) {
 void MacroAssembler::ResetRegisterUsage() {
   rr_.reset();
   mm_.reset();
+  kk_.reset();
   rr_.use(datareg);
   if (options_.profiling) rr_.use(tsreg);
 }

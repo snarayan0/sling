@@ -325,6 +325,11 @@ class MacroAssembler : public jit::Assembler {
   // Multiply register with constant.
   void Multiply(jit::Register reg, int64 scalar);
 
+  // Load mask into opmask register with the lower n bits set. Allocates new
+  // opmask register if no mask register is provided as input.
+  jit::OpmaskRegister LoadMask(int n,
+                               jit::OpmaskRegister k = jit::no_opmask_reg);
+
   // Add value to global counter.
   void UpdateCounter(int64 *counter, int64 value);
 

@@ -1,3 +1,31 @@
+# Copyright 2018 Google Inc. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# ==============================================================================
+
+"""Convert Intel ops to methods for assembler.
+
+This tools converts the instruction op code table to a header file with methods
+for encoding each instruction.
+
+python tools/optohdr.py > third_party/jit/avx512.h
+
+"""
+
+import string
+
+warnings = False
+
 class Method:
   def __init__(self, name, opcode, args, numargs, flags):
     self.name = name
@@ -34,24 +62,23 @@ def find_method(name, args):
       return m
   return None
 
+# Parse all the op definitions.
 print "// Auto-generated from Intel instruction tables."
-fin = open("avx512ops.txt", "r")
+fin = open("third_party/jit/avx512ops.txt", "r")
 for line in fin.readlines():
   line = line.strip()
   if len(line) == 0 or line[0] == "#": continue
   fields = line.replace(",", "").split("\t")
   enc = fields[0]
   tokens = enc.split(" ")
-  #print tokens
 
   mnemonic = ""
   opcode = ""
   flags = []
   imm8 = False
-  numbers = [False] * 10
   vsib = False
 
-  # Parse EVEX encoding
+  # Parse EVEX encoding.
   for flag in tokens[0].split("."):
     if flag == "EVEX":
       pass
@@ -70,7 +97,7 @@ for line in fin.readlines():
     else:
       print "flag:", flag
 
-  # Parse op code
+  # Parse op code.
   opcode = tokens[1]
 
   # Parse rest of encoding
@@ -83,86 +110,100 @@ for line in fin.readlines():
       imm8 = True
     elif tokens[i] in ["/0", "/1", "/2", "/3", "/4", "/5", "/6", "/7"]:
       ireg = int(tokens[i][1])
-    elif tokens[i] == "02":
-      opcode = tokens[i] + opcode
     elif tokens[i] == "/vsib":
       vsib = True
+    elif all(c in string.hexdigits for c in tokens[i]):
+      opcode = tokens[i] + opcode
     else:
       break
     i += 1
 
-
-  # vsib encoding not supported
-  if vsib: continue
-
+  # Get opcode mnemonic.
   mnemonic = tokens[i].lower()
   i += 1
   arguments = tokens[i:]
 
-  if mnemonic in ["vcvttss2si", "vcvttsd2si", "vcvtss2usi", "vcvttss2usi", "vcvtsd2usi", "vcvtss2si", "vcvttsd2usi"]: continue
+  # vsib encoding not supported.
+  if vsib:
+    if warnings: print "// vsib encoding not supported for " + mnemonic
+    continue
 
-  #if len(opcode) > 2: print "// extended opcode for " + mnemonic + " " + opcode
-  #if ireg != -1: print "// " + mnemonic + " has ireg encoding: ", ireg
-
+  # Parse instruction arguments.
   args = []
   mask = False
   bcst = False
   er = False
   sae = False
   numargs = 0
-  for arg in arguments:
-    if arg in ["{k1}{z}", "{k2}", "{k1}"]:
+  for a in arguments:
+    arg = ""
+    for c in a:
+      arg += "0" if c.isdigit() else c
+
+    if arg in ["{k0}{z}", "{k0}"]:
       mask = True
-    elif arg in ["k1", "k2"]:
+    elif arg in ["k0"]:
       args.append("opmask")
       numargs += 1
-    elif arg in ["xmm1", "ymm1", "zmm1", "xmm2", "ymm2", "zmm2", "xmm0", "xmm3"]:
+    elif arg in ["xmm0", "ymm0", "zmm0"]:
       args.append("zmm")
       numargs += 1
-    elif arg in ["zmm2{sae}"]:
+    elif arg in ["zmm0{sae}"]:
       args.append("zmm")
       sae = True
       numargs += 1
-    elif arg in ["m64", "m128", "m256", "m512", "m32", "/m128"]:
+    elif arg in ["m00", "m000"]:
       args.append("mem")
       numargs += 1
-    elif arg in ["xmm3/m128", "ymm3/m256", "zmm3/m512", "xmm3/m32", "xmm2/m16", "xmm2/m32", "xmm2/m64", "xmm3/m64", "xmm2/mm128", "xmm1/m16"]:
+    elif arg in ["xmm0/m000",
+                 "ymm0/m000",
+                 "zmm0/m000",
+                 "xmm0/m00",
+                 "xmm0/m000"]:
       args.append("zmm/mem")
       numargs += 1
-    elif arg in ["xmm3/m128/m32bcst", "ymm3/m256/m32bcst", "zmm3/m512/m32bcst", "xmm3/m128/m64bcst", "ymm3/m256/m64bcst", "zmm3/m512/m64bcst", "xmm2/m128/m32bcst", "ymm2/m256/m32bcst", "xmm2/m64/m32bcst", "xmm2/m128/m64bcst", "ymm2/m256/m64bcst", "zmm2/m512/m32bcst", "zmm2/m512/m64bcst", "xmm2xmm3/m128/m64bcst"]:
+    elif arg in ["xmm0/m000/m00bcst",
+                 "xmm0/m00/m00bcst",
+                 "ymm0/m000/m00bcst",
+                 "zmm0/m000/m00bcst"]:
       args.append("zmm/mem")
       bcst = True
       numargs += 1
-    elif arg in ["zmm3/m512/m64bcst{er}", "zmm3/m512/m32bcst{er}", "zmm2/m512/m32bcst{er}", "zmm2/m512/m64bcst{er}"]:
+    elif arg in ["zmm0/m000/m00bcst{er}"]:
       args.append("zmm/mem")
       bcst = True
       er = True
       numargs += 1
-    elif arg in ["xmm3/m64{er}", "xmm3/m32{er}", "xmm1/m32{er}", "xmm1/m64{er}"]:
+    elif arg in ["xmm0/m00{er}"]:
       args.append("zmm/mem")
       er = True
       numargs += 1
-    elif arg in ["xmm1/m32", "xmm1/m64", "xmm1/m128", "xmm2/m128", "ymm2/m256", "zmm2/m512", "ymm1/m256", "zmm1/m512", "xmm2/m8"]:
+    elif arg in ["xmm0/m00",
+                 "xmm0/m000",
+                 "ymm0/m000",
+                 "zmm0/m000"]:
       args.append("zmm/mem")
       numargs += 1
-    elif arg in ["xmm3/m32{sae}", "xmm3/m64{sae}", "xmm1/m32{sae}", "xmm2/m32{sae}", "xmm2/m64{sae}", "xmm1/m64{sae}", "ymm2/m256{sae}"]:
+    elif arg in ["xmm0/m00{sae}",
+                 "xmm0/m00{sae}",
+                 "ymm0/m000{sae}"]:
       args.append("zmm/mem")
       sae = True
       numargs += 1
-    elif arg in ["zmm2/m512/m32bcst{sae}", "zmm3/m512/m64bcst{sae}", "zmm2/m512/m64bcst{sae}", "zmm3/m512/m32bcst{sae}", "ymm2/m256/m32bcst{sae}"]:
+    elif arg in ["zmm0/m000/m00bcst{sae}", "ymm0/m000/m00bcst{sae}"]:
       args.append("zmm/mem")
       bcast = True
       sae = True
       numargs += 1
-    elif arg in ["imm8"]:
+    elif arg in ["imm0"]:
       args.append("imm")
-    elif arg in ["r32", "r64", "reg"]:
+    elif arg in ["r00", "r00", "reg"]:
       args.append("reg")
       numargs += 1
-    elif arg in ["reg/m32", "r32/m32", "r64/m64", "r/m32", "r/m32"]:
+    elif arg in ["reg/m00", "r00/m00", "r00/m00", "r/m00"]:
       args.append("reg/mem")
       numargs += 1
-    elif arg in ["r/m32{er}", "r/m64{er}"]:
+    elif arg in ["r/m00{er}"]:
       args.append("reg/mem")
       er = True
       numargs += 1
@@ -174,8 +215,10 @@ for line in fin.readlines():
     method = Method(mnemonic, opcode, args, numargs, flags)
     methods.append(method)
   else:
-    #if opcode != method.opcode: print "Hmm! opcode mismatch", method.name, method.opcode, method.args, opcode, args
-    if numargs != method.numargs: print "Hmm! numargs mismatch"
+    if warnings and opcode != method.opcode:
+      print "// Hmm! opcode mismatch", method.name, method.opcode
+    if warnings and numargs != method.numargs:
+      print "// Hmm! numargs mismatch"
     method.add_flags(flags)
 
   if ireg != -1: method.ireg = ireg
@@ -184,12 +227,15 @@ for line in fin.readlines():
   if er: method.er = True
   if sae: method.sae = True
 
+fin.close()
+
+# Split methods that take reg/mem arguments.
 for method in methods:
   reg_mem_arg = -1
   for i in range(len(method.args)):
     arg = method.args[i]
     if arg == "zmm/mem" or arg == "reg/mem":
-      if reg_mem_arg != -1: print "Oops!!"
+      if warnings and reg_mem_arg != -1: print "// Oops!! multi reg/mem"
       reg_mem_arg = i
 
   if reg_mem_arg != -1:
@@ -205,6 +251,7 @@ for method in methods:
     if not find_method(mem_method.name, mem_method.args):
       methods.append(mem_method)
 
+# Generate instruction methods.
 signatures = []
 for method in sorted(methods, key=lambda x: x.name):
   argsigs = []
@@ -262,6 +309,4 @@ for method in sorted(methods, key=lambda x: x.name):
   if sig not in signatures:
     print sig + " {\n  " + body + "\n}"
     signatures.append(sig)
-
-fin.close()
 

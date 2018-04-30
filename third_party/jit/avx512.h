@@ -215,6 +215,12 @@ void vcvtsd2ss(ZMMRegister dst, ZMMRegister src1, ZMMRegister src2, Mask mask = 
 void vcvtsd2ss(ZMMRegister dst, ZMMRegister src1, const Operand &src2, Mask mask = nomask, RoundingMode er = kRoundToNearest) {
   zinstr(0x5A, dst, src1, src2, 0, mask, EVEX_ENDS | EVEX_ER | EVEX_LIG | EVEX_M0F | EVEX_PF2 | EVEX_W1 | evex_round(er));
 }
+void vcvtsd2usi(Register dst, ZMMRegister src, RoundingMode er = kRoundToNearest) {
+  zinstr(0x79, dst, src, 0, nomask, EVEX_ER | EVEX_LIG | EVEX_M0F | EVEX_PF2 | EVEX_W0 | EVEX_W1 | evex_round(er));
+}
+void vcvtsd2usi(Register dst, const Operand &src, RoundingMode er = kRoundToNearest) {
+  zinstr(0x79, dst, src, 0, nomask, EVEX_ER | EVEX_LIG | EVEX_M0F | EVEX_PF2 | EVEX_W0 | EVEX_W1 | evex_round(er));
+}
 void vcvtsi2sd(ZMMRegister dst, ZMMRegister src1, Register src2, RoundingMode er = kRoundToNearest) {
   zinstr(0x2A, dst, src1, src2, 0, nomask, EVEX_ENDS | EVEX_ER | EVEX_LIG | EVEX_M0F | EVEX_PF2 | EVEX_W0 | EVEX_W1 | evex_round(er));
 }
@@ -232,6 +238,18 @@ void vcvtss2sd(ZMMRegister dst, ZMMRegister src1, ZMMRegister src2, Mask mask = 
 }
 void vcvtss2sd(ZMMRegister dst, ZMMRegister src1, const Operand &src2, Mask mask = nomask) {
   zinstr(0x5A, dst, src1, src2, 0, mask, EVEX_ENDS | EVEX_LIG | EVEX_M0F | EVEX_PF3 | EVEX_SAE | EVEX_W0);
+}
+void vcvtss2si(Register dst, ZMMRegister src, RoundingMode er = kRoundToNearest) {
+  zinstr(0x2D, dst, src, 0, nomask, EVEX_ER | EVEX_LIG | EVEX_M0F | EVEX_PF3 | EVEX_W0 | EVEX_W1 | evex_round(er));
+}
+void vcvtss2si(Register dst, const Operand &src, RoundingMode er = kRoundToNearest) {
+  zinstr(0x2D, dst, src, 0, nomask, EVEX_ER | EVEX_LIG | EVEX_M0F | EVEX_PF3 | EVEX_W0 | EVEX_W1 | evex_round(er));
+}
+void vcvtss2usi(Register dst, ZMMRegister src, RoundingMode er = kRoundToNearest) {
+  zinstr(0x79, dst, src, 0, nomask, EVEX_ER | EVEX_LIG | EVEX_M0F | EVEX_PF3 | EVEX_W0 | EVEX_W1 | evex_round(er));
+}
+void vcvtss2usi(Register dst, const Operand &src, RoundingMode er = kRoundToNearest) {
+  zinstr(0x79, dst, src, 0, nomask, EVEX_ER | EVEX_LIG | EVEX_M0F | EVEX_PF3 | EVEX_W0 | EVEX_W1 | evex_round(er));
 }
 void vcvttpd2dq(ZMMRegister dst, ZMMRegister src, Mask mask = nomask) {
   zinstr(0xE6, dst, src, 0, mask, EVEX_BCST | EVEX_L128 | EVEX_L256 | EVEX_L512 | EVEX_M0F | EVEX_P66 | EVEX_W1);
@@ -256,6 +274,18 @@ void vcvttps2udq(ZMMRegister dst, ZMMRegister src, Mask mask = nomask) {
 }
 void vcvttps2udq(ZMMRegister dst, const Operand &src, Mask mask = nomask) {
   zinstr(0x78, dst, src, 0, mask, EVEX_BCST | EVEX_L128 | EVEX_L256 | EVEX_L512 | EVEX_M0F | EVEX_W0);
+}
+void vcvttsd2usi(Register dst, ZMMRegister src) {
+  zinstr(0x78, dst, src, 0, nomask, EVEX_LIG | EVEX_M0F | EVEX_PF2 | EVEX_SAE | EVEX_W0 | EVEX_W1);
+}
+void vcvttsd2usi(Register dst, const Operand &src) {
+  zinstr(0x78, dst, src, 0, nomask, EVEX_LIG | EVEX_M0F | EVEX_PF2 | EVEX_SAE | EVEX_W0 | EVEX_W1);
+}
+void vcvttss2usi(Register dst, ZMMRegister src) {
+  zinstr(0x78, dst, src, 0, nomask, EVEX_LIG | EVEX_M0F | EVEX_PF3 | EVEX_SAE | EVEX_W0 | EVEX_W1);
+}
+void vcvttss2usi(Register dst, const Operand &src) {
+  zinstr(0x78, dst, src, 0, nomask, EVEX_LIG | EVEX_M0F | EVEX_PF3 | EVEX_SAE | EVEX_W0 | EVEX_W1);
 }
 void vcvtudq2pd(ZMMRegister dst, ZMMRegister src, Mask mask = nomask) {
   zinstr(0x7A, dst, src, 0, mask, EVEX_BCST | EVEX_L128 | EVEX_L256 | EVEX_L512 | EVEX_M0F | EVEX_PF3 | EVEX_W0);
