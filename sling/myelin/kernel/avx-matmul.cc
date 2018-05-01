@@ -104,15 +104,16 @@ class AVXFltVecMatMulVBase : public AVXVecMatMulBase {
     Tensor *b = bias_ ? step->input(2) : nullptr;
     Tensor *y = step->output(0);
 
-    // Align to one ymm register (256 bits, 32 bytes).
-    int byte_alignment = 256 / 8;
+    // Align to one SIMD register.
+    bool avx512 = CPU::Enabled(AVX512F);
+    int byte_alignment = avx512 ? 32 : 64;
     x->SetMiniumAlignment(byte_alignment);
     W->SetMiniumAlignment(byte_alignment);
     y->SetMiniumAlignment(byte_alignment);
     if (bias_) b->SetMiniumAlignment(byte_alignment);
 
-    // Rows must be aligned to ymm boundaries to support aligned loads.
-    W->MinAlign({8, 1});
+    // Rows must be aligned to SIMD boundaries to support aligned loads.
+    W->MinAlign({avx512 ? 16 : 8, 1});
     W->SetRequiredOrder(ROW_MAJOR);
   }
 
@@ -129,27 +130,32 @@ class AVXFltVecMatMulVBase : public AVXVecMatMulBase {
 
     // FMA is not strict math compatible.
     bool fma = masm->Enabled(FMA3);
+    bool avx512 = masm->Enabled(AVX512F);
     bool strict = step->GetAttr("strict", false);
     if (strict) {
       fma = false;
+      avx512 = false;
       step->set_variant("strict");
     }
+    int vecsize = avx512 ? 16 : 8;
+    int vecbytes = vecsize * sizeof(float);
 
     // Get matrix dimensions.
     int rows = W->dim(0);
     int cols = W->dim(1);
-    int main_cols = (cols  / 8) * 8;
+    int main_cols = (cols  / vecsize) * vecsize;
     int remaining_cols = cols - main_cols;
 
     // Compute the number of unrolls.
     int unrolls = 0;
     for (int i = 1; i <= kMaxUnrolls; ++i) {
-      int batch_size = i * 8;
+      int batch_size = i * vecsize;
       if (main_cols >= batch_size && main_cols % batch_size == 0) unrolls = i;
     }
     if (step->variant().empty()) {
       string variant = "U" + std::to_string(unrolls);
       if (remaining_cols > 0) variant += "R" + std::to_string(remaining_cols);
+      if (avx512) variant += "Z";
       step->set_variant(variant);
     }
 
@@ -163,16 +169,16 @@ class AVXFltVecMatMulVBase : public AVXVecMatMulBase {
     Register vector = bias_ ? rr.alloc() : no_reg;
 
     // Allocate SIMD registers.
-    std::vector<YMMRegister> sum;
+    std::vector<ZMMRegister> sum;
     for (int i = 0; i < std::max(unrolls, 4); ++i) {
-      sum.push_back(mm.allocy());
+      sum.push_back(mm.allocz());
     }
-    std::vector<YMMRegister> acc;
+    std::vector<ZMMRegister> acc;
     for (int i = 0; i < 4; ++i) {
-      acc.push_back(mm.allocy());
+      acc.push_back(mm.allocz(avx512));
     }
-    YMMRegister elem = mm.allocy();
-    YMMRegister zero = relu_ ? mm.allocy() : no_ymm_reg;
+    ZMMRegister elem = mm.allocz(avx512);
+    ZMMRegister zero = relu_ ? mm.allocz(avx512) : no_zmm_reg;
 
     // Load tensor locations.
     __ LoadTensorAddress(input, x);
@@ -184,7 +190,11 @@ class AVXFltVecMatMulVBase : public AVXVecMatMulBase {
 
     // Initialize SIMD register to zero for relu.
     if (relu_) {
-      __ vxorps(zero, zero, zero);
+      if (avx512) {
+        __ vxorps(zero, zero, zero);
+      } else {
+        __ vxorps(zero.ymm(), zero.ymm(), zero.ymm());
+      }
     }
 
     // Compute main columns.
@@ -196,9 +206,19 @@ class AVXFltVecMatMulVBase : public AVXVecMatMulBase {
       // Initialize block with bias or zero.
       for (int i = 0; i < unrolls; ++i) {
         if (bias_ && !strict) {
-          __ vmovaps(sum[i], Operand(vector, colofs, times_1, i * 32));
+          if (avx512) {
+            __ vmovaps(sum[i],
+                       Operand(vector, colofs, times_1, i * vecbytes));
+          } else {
+            __ vmovaps(sum[i].ymm(),
+                       Operand(vector, colofs, times_1, i * vecbytes));
+          }
         } else {
-          __ vxorps(sum[i], sum[i], sum[i]);
+          if (avx512) {
+            __ vxorps(sum[i], sum[i], sum[i]);
+          } else {
+            __ vxorps(sum[i].ymm(), sum[i].ymm(), sum[i].ymm());
+          }
         }
       }
       __ movq(m, matrix);
@@ -208,15 +228,22 @@ class AVXFltVecMatMulVBase : public AVXVecMatMulBase {
       __ LoopStart(&l2);
 
       // Load x[row].
-      __ vbroadcastss(elem, Operand(input, rowofs));
+      if (avx512) {
+        __ vbroadcastss(elem, Operand(input, rowofs));
+      } else {
+        __ vbroadcastss(elem.ymm(), Operand(input, rowofs));
+      }
 
       // Multiply x[row] with W[row,col:col+n] and add to sum.
       for (int i = 0; i < unrolls; ++i) {
-        if (fma) {
-          __ vfmadd231ps(sum[i], elem, Operand(m, i * 32));
+        int a = i % 4;
+        if (avx512) {
+          __ vfmadd231ps(sum[i], elem, Operand(m, i * vecbytes));
+        } else if (fma) {
+          __ vfmadd231ps(sum[i].ymm(), elem.ymm(), Operand(m, i * vecbytes));
         } else {
-          __ vmulps(acc[i % 4], elem, Operand(m, i * 32));
-          __ vaddps(sum[i], sum[i], acc[i % 4]);
+          __ vmulps(acc[a].ymm(), elem.ymm(), Operand(m, i * vecbytes));
+          __ vaddps(sum[i].ymm(), sum[i].ymm(), acc[a].ymm());
         }
       }
 
@@ -232,22 +259,33 @@ class AVXFltVecMatMulVBase : public AVXVecMatMulBase {
       for (int i = 0; i < unrolls; ++i) {
         // Add bias last in strict mode.
         if (bias_ && strict) {
-          __ vaddps(sum[i], sum[i], Operand(vector, colofs, times_1, i * 32));
+          __ vaddps(sum[i].ymm(), sum[i].ymm(),
+                    Operand(vector, colofs, times_1, i * vecbytes));
         }
 
         // Compute relu.
         if (relu_) {
-          __ vmaxps(sum[i], sum[i], zero);
+          if (avx512) {
+            __ vmaxps(sum[i], sum[i], zero);
+          } else {
+            __ vmaxps(sum[i].ymm(), sum[i].ymm(), zero.ymm());
+          }
         }
-        __ vmovaps(Operand(output, colofs, times_1, i * 32), sum[i]);
+        if (avx512) {
+          __ vmovaps(Operand(output, colofs, times_1, i * vecbytes),
+                     sum[i]);
+        } else {
+          __ vmovaps(Operand(output, colofs, times_1, i * vecbytes),
+                     sum[i].ymm());
+        }
       }
 
       // Next matrix column block.
-      if (main_cols > unrolls * 8 || remaining_cols > 0) {
-        __ addq(matrix, Immediate(unrolls * 32));
+      if (main_cols > unrolls * vecsize || remaining_cols > 0) {
+        __ addq(matrix, Immediate(unrolls * vecbytes));
       }
-      if (main_cols > unrolls * 8) {
-        __ addq(colofs, Immediate(unrolls * 32));
+      if (main_cols > unrolls * vecsize) {
+        __ addq(colofs, Immediate(unrolls * vecbytes));
         __ cmpq(colofs, Immediate(main_cols * sizeof(float)));
         __ j(less, &l1);
       }
@@ -255,97 +293,138 @@ class AVXFltVecMatMulVBase : public AVXVecMatMulBase {
 
     // Compute remaining columns.
     if (remaining_cols > 0) {
-      CHECK_LE(remaining_cols, 7);
-      // Initialize remaining columns with bias or zero.
-      int coldisp = main_cols * sizeof(float);
-      if (remaining_cols & 4) {
-        if (bias_ && !strict) {
-          __ vmovaps(sum[0].xmm(), Operand(vector, coldisp));
-        } else {
-          __ vxorps(sum[0].xmm(), sum[0].xmm(), sum[0].xmm());
-        }
-        coldisp += 4 * sizeof(float);
-      }
-      for (int i = 0; i < (remaining_cols & 3); ++i) {
-        int reg = i + 1;
-        if (bias_ && !strict) {
-          __ vmovss(sum[reg].xmm(), Operand(vector, coldisp));
-        } else {
-          __ vxorps(sum[reg].xmm(), sum[reg].xmm(), sum[reg].xmm());
-        }
-        coldisp += sizeof(float);
-      }
+      if (avx512) {
+        CHECK_LT(remaining_cols, 16);
+        int coldisp = main_cols * sizeof(float);
 
-      // Loop over rows.
-      __ movq(m, matrix);
-      __ xorq(rowofs, rowofs);
-      __ LoopStart(&l3);
+        // Initialize mask for residual.
+        OpmaskRegister mask = masm->kk().alloc();
+        __ LoadMask(remaining_cols, mask);
 
-      // Load x[row].
-      if (remaining_cols & 4) {
+        // Initialize remaining columns with bias or zero.
+        if (bias_) {
+          __ vmovaps(sum[0], Operand(vector, coldisp), Mask(mask, zeroing));
+        } else {
+          __ vxorps(sum[0], sum[0], sum[0]);
+        }
+
+        // Loop over rows.
+        __ movq(m, matrix);
+        __ xorq(rowofs, rowofs);
+        __ LoopStart(&l3);
+
+        // Load x[row].
         __ vbroadcastss(elem, Operand(input, rowofs));
+
+        // Compute remaining columns using AVX512 masking.
+        __ vfmadd231ps(sum[0], elem, Operand(m), Mask(mask, zeroing));
+
+        // Next row.
+        if (rows > 1) {
+          __ addq(m, Immediate(W->stride(0)));
+          __ addq(rowofs, Immediate(sizeof(float)));
+          __ cmpq(rowofs, Immediate(rows * sizeof(float)));
+          __ j(less, &l3);
+        }
+
+        // Compute relu and save remaining columns.
+        if (relu_) {
+          __ vmaxps(sum[0], sum[0], zero);
+        }
+        __ vmovaps(Operand(output, coldisp), sum[0], Mask(mask, merging));
       } else {
-        __ vmovss(elem, Operand(input, rowofs));
-      }
+        // Initialize remaining columns with bias or zero.
+        CHECK_LT(remaining_cols, 8);
+        int coldisp = main_cols * sizeof(float);
+        if (remaining_cols & 4) {
+          if (bias_ && !strict) {
+            __ vmovaps(sum[0].xmm(), Operand(vector, coldisp));
+          } else {
+            __ vxorps(sum[0].xmm(), sum[0].xmm(), sum[0].xmm());
+          }
+          coldisp += 4 * sizeof(float);
+        }
+        for (int i = 0; i < (remaining_cols & 3); ++i) {
+          int reg = i + 1;
+          if (bias_ && !strict) {
+            __ vmovss(sum[reg].xmm(), Operand(vector, coldisp));
+          } else {
+            __ vxorps(sum[reg].xmm(), sum[reg].xmm(), sum[reg].xmm());
+          }
+          coldisp += sizeof(float);
+        }
 
-      // Compute first four remaining columns using SSE.
-      int left = remaining_cols;
-      int disp = 0;
-      if (left >= 4) {
-        if (fma) {
-          __ vfmadd231ps(sum[0].xmm(), elem.xmm(), Operand(m, disp));
+        // Loop over rows.
+        __ movq(m, matrix);
+        __ xorq(rowofs, rowofs);
+        __ LoopStart(&l3);
+
+        // Load x[row].
+        if (remaining_cols & 4) {
+          __ vbroadcastss(elem.xmm(), Operand(input, rowofs));
         } else {
-          __ vmulps(acc[0].xmm(), elem.xmm(), Operand(m, disp));
-          __ vaddps(sum[0].xmm(), sum[0].xmm(), acc[0].xmm());
+          __ vmovss(elem.xmm(), Operand(input, rowofs));
         }
-        left -= 4;
-        disp += 4 * sizeof(float);
-      }
 
-      // Compute up to three remaining columns as scalars.
-      int reg = 1;
-      while (left > 0) {
-        if (fma) {
-          __ vfmadd231ss(sum[reg].xmm(), elem.xmm(), Operand(m, disp));
-        } else {
-          __ vmulss(acc[0].xmm(), elem.xmm(), Operand(m, disp));
-          __ vaddss(sum[reg].xmm(), sum[reg].xmm(), acc[0].xmm());
+        // Compute first four remaining columns using SSE.
+        int left = remaining_cols;
+        int disp = 0;
+        if (left >= 4) {
+          if (fma) {
+            __ vfmadd231ps(sum[0].xmm(), elem.xmm(), Operand(m, disp));
+          } else {
+            __ vmulps(acc[0].xmm(), elem.xmm(), Operand(m, disp));
+            __ vaddps(sum[0].xmm(), sum[0].xmm(), acc[0].xmm());
+          }
+          left -= 4;
+          disp += 4 * sizeof(float);
         }
-        left--;
-        reg++;
-        disp += sizeof(float);
-      }
 
-      // Next row.
-      if (rows > 1) {
-        __ addq(m, Immediate(W->stride(0)));
-        __ addq(rowofs, Immediate(sizeof(float)));
-        __ cmpq(rowofs, Immediate(rows * sizeof(float)));
-        __ j(less, &l3);
-      }
+        // Compute up to three remaining columns as scalars.
+        int reg = 1;
+        while (left > 0) {
+          if (fma) {
+            __ vfmadd231ss(sum[reg].xmm(), elem.xmm(), Operand(m, disp));
+          } else {
+            __ vmulss(acc[0].xmm(), elem.xmm(), Operand(m, disp));
+            __ vaddss(sum[reg].xmm(), sum[reg].xmm(), acc[0].xmm());
+          }
+          left--;
+          reg++;
+          disp += sizeof(float);
+        }
 
-      // Compute relu and save remaining columns.
-      coldisp = main_cols * sizeof(float);
-      if (remaining_cols & 4) {
-        if (bias_ && strict) {
-          __ vaddps(sum[0].xmm(), sum[0].xmm(), Operand(vector, coldisp));
+        // Next row.
+        if (rows > 1) {
+          __ addq(m, Immediate(W->stride(0)));
+          __ addq(rowofs, Immediate(sizeof(float)));
+          __ cmpq(rowofs, Immediate(rows * sizeof(float)));
+          __ j(less, &l3);
         }
-        if (relu_) {
-          __ vmaxps(sum[0].xmm(), sum[0].xmm(), zero.xmm());
+
+        // Compute relu and save remaining columns.
+        coldisp = main_cols * sizeof(float);
+        if (remaining_cols & 4) {
+          if (bias_ && strict) {
+            __ vaddps(sum[0].xmm(), sum[0].xmm(), Operand(vector, coldisp));
+          }
+          if (relu_) {
+            __ vmaxps(sum[0].xmm(), sum[0].xmm(), zero.xmm());
+          }
+          __ vmovaps(Operand(output, coldisp), sum[0].xmm());
+          coldisp += 4 * sizeof(float);
         }
-        __ vmovaps(Operand(output, coldisp), sum[0].xmm());
-        coldisp += 4 * sizeof(float);
-      }
-      for (int i = 0; i < (remaining_cols & 3); ++i) {
-        int reg = i + 1;
-        if (bias_ && strict) {
-          __ vaddss(sum[reg].xmm(), sum[reg].xmm(), Operand(vector, coldisp));
+        for (int i = 0; i < (remaining_cols & 3); ++i) {
+          int reg = i + 1;
+          if (bias_ && strict) {
+            __ vaddss(sum[reg].xmm(), sum[reg].xmm(), Operand(vector, coldisp));
+          }
+          if (relu_) {
+            __ vmaxss(sum[reg].xmm(), sum[reg].xmm(), zero.xmm());
+          }
+          __ vmovss(Operand(output, coldisp), sum[reg].xmm());
+          coldisp += sizeof(float);
         }
-        if (relu_) {
-          __ vmaxss(sum[reg].xmm(), sum[reg].xmm(), zero.xmm());
-        }
-        __ vmovss(Operand(output, coldisp), sum[reg].xmm());
-        coldisp += sizeof(float);
       }
     }
   }
@@ -440,6 +519,7 @@ class AVXFltVecMatMulHBase : public AVXVecMatMulBase {
     int row_size = W->stride(1);
 
     // Compute the number of unrolls and adders.
+    bool avx512 = masm->Enabled(AVX512F);
     int unrolls = 0;
     for (int i = 1; i <= kMaxUnrolls; ++i) {
       int batch_size = i * 8;
@@ -451,6 +531,7 @@ class AVXFltVecMatMulHBase : public AVXVecMatMulBase {
     string variant = "U" + std::to_string(unrolls);
     variant += "A" + std::to_string(adders);
     if (remaining_rows > 0) variant += "R" + std::to_string(remaining_rows);
+    if (avx512) variant += "Z";
     step->set_variant(variant);
 
     // Allocate general registers.
@@ -462,16 +543,16 @@ class AVXFltVecMatMulHBase : public AVXVecMatMulBase {
     Register vector = bias_ ? rr.alloc() : no_reg;
 
     // Allocate SIMD registers.
-    std::vector<YMMRegister> elem;
+    std::vector<ZMMRegister> elem;
     for (int i = 0; i < std::max(unrolls, 1); ++i) {
-      elem.push_back(mm.allocy());
+      elem.push_back(mm.allocz(avx512));
     }
-    std::vector<YMMRegister> sum;
+    std::vector<ZMMRegister> sum;
     for (int i = 0; i < adders; ++i) {
-      sum.push_back(mm.allocy());
+      sum.push_back(mm.allocz(avx512));
     }
-    YMMRegister acc = mm.allocy();
-    YMMRegister zero = relu_ ? mm.allocy() : no_ymm_reg;
+    ZMMRegister acc = mm.allocz(avx512);
+    ZMMRegister zero = relu_ ? mm.allocz(avx512) : no_zmm_reg;
 
     // Load tensor locations.
     __ LoadTensorAddress(input, x);
@@ -482,7 +563,7 @@ class AVXFltVecMatMulHBase : public AVXVecMatMulBase {
     __ LoadTensorAddress(output, y);
     __ xorq(col, col);
     if (relu_) {
-      __ vxorps(zero, zero, zero);
+      __ vxorps(zero.ymm(), zero.ymm(), zero.ymm());
     }
 
     // Outer loop over columns.
@@ -512,30 +593,32 @@ class AVXFltVecMatMulHBase : public AVXVecMatMulBase {
       // Inner loop over main rows.
       __ xorq(row, row);
       if (bias_) {
-        __ vmovss(sum[0], Operand(vector, col, times_4));
+        __ vmovss(sum[0].ymm(), Operand(vector, col, times_4));
       }
       for (int i = (bias_ ? 1 : 0); i < adders; ++i) {
-        __ vxorps(sum[i], sum[i], sum[i]);
+        __ vxorps(sum[i].ymm(), sum[i].ymm(), sum[i].ymm());
       }
 
       __ LoopStart(&l2);
       for (int i = 0; i < unrolls; ++i) {
         // Load x[row:row+8].
         int disp = 8 * i * sizeof(float);
-        __ vmovaps(elem[i], Operand(input, row, times_4, disp));
+        __ vmovaps(elem[i].ymm(), Operand(input, row, times_4, disp));
       }
       for (int i = 0; i < unrolls; ++i) {
         int disp = 8 * i * sizeof(float);
+        int a = i % adders;
         if (masm->Enabled(FMA3)) {
           // Multiply x[row:row+8] with W[row:row+8,col] and add to sum.
-          __ vfmadd231ps(sum[i % adders], elem[i],
+          __ vfmadd231ps(sum[a].ymm(), elem[i].ymm(),
                          Operand(matrix, row, times_4, disp));
         } else {
           // Multiply x[row:row+8] with W[row:row+8,col].
-          __ vmulps(elem[i], elem[i], Operand(matrix, row, times_4, disp));
+          __ vmulps(elem[i].ymm(), elem[i].ymm(),
+                    Operand(matrix, row, times_4, disp));
 
           // Sum dot product in parallel.
-          __ vaddps(sum[i % adders], sum[i % adders], elem[i]);
+          __ vaddps(sum[a].ymm(), sum[a].ymm(), elem[i].ymm());
         }
       }
 
@@ -579,36 +662,36 @@ class AVXFltVecMatMulHBase : public AVXVecMatMulBase {
             left--;
             disp += sizeof(float);
           }
-          __ vperm2f128(acc, acc, acc, 0x80);
-          __ vaddps(sum[0], sum[0], acc);
+          __ vperm2f128(acc.ymm(), acc.ymm(), acc.ymm(), 0x80);
+          __ vaddps(sum[0].ymm(), sum[0].ymm(), acc.ymm());
         }
       }
 
       // Sum adders in sum[0].
       if (adders == 4) {
-        __ vaddps(sum[0], sum[0], sum[2]);
-        __ vaddps(sum[1], sum[1], sum[3]);
-        __ vaddps(sum[0], sum[0], sum[1]);
+        __ vaddps(sum[0].ymm(), sum[0].ymm(), sum[2].ymm());
+        __ vaddps(sum[1].ymm(), sum[1].ymm(), sum[3].ymm());
+        __ vaddps(sum[0].ymm(), sum[0].ymm(), sum[1].ymm());
       } else {
         for (int i = 1; i < adders; ++i) {
-          __ vaddps(sum[0], sum[0], sum[i]);
+          __ vaddps(sum[0].ymm(), sum[0].ymm(), sum[i].ymm());
         }
       }
 
       // Add elements in sum[0] horizontally.
-      __ vperm2f128(acc, sum[0], sum[0], 1);
-      __ vhaddps(sum[0], sum[0], acc);
-      __ vhaddps(sum[0], sum[0], sum[0]);
-      __ vhaddps(sum[0], sum[0], sum[0]);
+      __ vperm2f128(acc.ymm(), sum[0].ymm(), sum[0].ymm(), 1);
+      __ vhaddps(sum[0].ymm(), sum[0].ymm(), acc.ymm());
+      __ vhaddps(sum[0].ymm(), sum[0].ymm(), sum[0].ymm());
+      __ vhaddps(sum[0].ymm(), sum[0].ymm(), sum[0].ymm());
     }
 
     // Compute relu.
     if (relu_) {
-      __ vmaxss(sum[0], sum[0], zero);
+      __ vmaxss(sum[0].ymm(), sum[0].ymm(), zero.ymm());
     }
 
     // Save to y[col].
-    __ vmovss(Operand(output, col, times_4), sum[0]);
+    __ vmovss(Operand(output, col, times_4), sum[0].ymm());
 
     // Move to next column.
     if (cols > 1) {
@@ -760,6 +843,7 @@ class AVXFltMatMatMul : public Kernel {
     int c_col_dim = 1;
 
     // Compute the number of unrolls and adders.
+    bool avx512 = masm->Enabled(AVX512F);
     int unrolls = 1;
     for (int i = 2; i <= kMaxUnrolls; ++i) {
       if (B->aligned(b_row_dim) % (i * 8) == 0) unrolls = i;
@@ -777,15 +861,15 @@ class AVXFltMatMatMul : public Kernel {
     Register k = rr.alloc();
 
     // Allocate SIMD registers.
-    std::vector<YMMRegister> elem;
+    std::vector<ZMMRegister> elem;
     for (int n = 0; n < unrolls; ++n) {
-      elem.push_back(mm.allocy());
+      elem.push_back(mm.allocz(avx512));
     }
-    std::vector<YMMRegister> sum;
+    std::vector<ZMMRegister> sum;
     for (int n = 0; n < adders; ++n) {
-      sum.push_back(mm.allocy());
+      sum.push_back(mm.allocz(avx512));
     }
-    YMMRegister acc = mm.allocy();
+    ZMMRegister acc = mm.allocz(avx512);
 
     // Load tensor locations.
     __ LoadTensorAddress(a, A);
@@ -806,7 +890,7 @@ class AVXFltMatMatMul : public Kernel {
     __ LoopStart(&l2);
     __ xorq(k, k);
     for (int n = 0; n < adders; ++n) {
-      __ vxorps(sum[n], sum[n], sum[n]);
+      __ vxorps(sum[n].ymm(), sum[n].ymm(), sum[n].ymm());
     }
 
     // Compute dot product of row in A and column in B.
@@ -815,18 +899,20 @@ class AVXFltMatMatMul : public Kernel {
     for (int n = 0; n < unrolls; ++n) {
       // Load A[i,k:k+8].
       int disp = 8 * n * sizeof(float);
-      __ vmovaps(elem[n], Operand(a, k, times_4, disp));
+      __ vmovaps(elem[n].ymm(), Operand(a, k, times_4, disp));
     }
 
     for (int n = 0; n < unrolls; ++n) {
       // Multiply A[i,k:k+8] with B[k:k+8,j] and add to sum.
       int disp = 8 * n * sizeof(float);
+      int a = n % adders;
       if (masm->Enabled(FMA3)) {
-        __ vfmadd231ps(sum[n % adders], elem[n],
+        __ vfmadd231ps(sum[a].ymm(), elem[n].ymm(),
                        Operand(b_row, k, times_4, disp));
       } else {
-        __ vmulps(elem[n], elem[n], Operand(b_row, k, times_4, disp));
-        __ vaddps(sum[n % adders], sum[n % adders], elem[n]);
+        __ vmulps(elem[n].ymm(), elem[n].ymm(),
+                  Operand(b_row, k, times_4, disp));
+        __ vaddps(sum[a].ymm(), sum[a].ymm(), elem[n].ymm());
       }
     }
 
@@ -836,23 +922,23 @@ class AVXFltMatMatMul : public Kernel {
 
     // Sum adders in sum[0].
     if (adders == 4) {
-      __ vaddps(sum[0], sum[0], sum[2]);
-      __ vaddps(sum[1], sum[1], sum[3]);
-      __ vaddps(sum[0], sum[0], sum[1]);
+      __ vaddps(sum[0].ymm(), sum[0].ymm(), sum[2].ymm());
+      __ vaddps(sum[1].ymm(), sum[1].ymm(), sum[3].ymm());
+      __ vaddps(sum[0].ymm(), sum[0].ymm(), sum[1].ymm());
     } else {
       for (int n = 1; n < adders; ++n) {
-        __ vaddps(sum[0], sum[0], sum[n]);
+        __ vaddps(sum[0].ymm(), sum[0].ymm(), sum[n].ymm());
       }
     }
 
     // Add elements in sum[0] horizontally.
-    __ vperm2f128(acc, sum[0], sum[0], 1);
-    __ vhaddps(sum[0], sum[0], acc);
-    __ vhaddps(sum[0], sum[0], sum[0]);
-    __ vhaddps(sum[0], sum[0], sum[0]);
+    __ vperm2f128(acc.ymm(), sum[0].ymm(), sum[0].ymm(), 1);
+    __ vhaddps(sum[0].ymm(), sum[0].ymm(), acc.ymm());
+    __ vhaddps(sum[0].ymm(), sum[0].ymm(), sum[0].ymm());
+    __ vhaddps(sum[0].ymm(), sum[0].ymm(), sum[0].ymm());
 
     // Save to C[i,j].
-    __ vmovss(Operand(c), sum[0]);
+    __ vmovss(Operand(c), sum[0].ymm());
     __ addq(c, Immediate(C->stride(c_col_dim)));
 
     // Move to next column in B.
@@ -940,6 +1026,7 @@ class AVXFltDotProduct : public Kernel {
     int n = a->elements();
 
     // Compute the number of unrolls and adders.
+    bool avx512 = masm->Enabled(AVX512F);
     int unrolls = 0;
     for (int i = 1; i <= kMaxUnrolls; ++i) {
       int batch_size = i * 8;
@@ -950,6 +1037,7 @@ class AVXFltDotProduct : public Kernel {
     if (adders > kMaxAdders) adders = kMaxAdders;
     string variant = "U" + std::to_string(unrolls);
     variant += "A" + std::to_string(adders);
+    if (avx512) variant += "Z";
     step->set_variant(variant);
 
     // Allocate general registers.
@@ -959,22 +1047,22 @@ class AVXFltDotProduct : public Kernel {
     Register cptr = rr.alloc();
 
     // Allocate SIMD registers.
-    std::vector<YMMRegister> elem;
+    std::vector<ZMMRegister> elem;
     for (int i = 0; i < std::max(unrolls, 1); ++i) {
-      elem.push_back(mm.allocy());
+      elem.push_back(mm.allocz(avx512));
     }
-    std::vector<YMMRegister> sum;
+    std::vector<ZMMRegister> sum;
     for (int i = 0; i < adders; ++i) {
-      sum.push_back(mm.allocy());
+      sum.push_back(mm.allocz(avx512));
     }
-    YMMRegister acc = mm.allocy();
+    ZMMRegister acc = mm.allocz(avx512);
 
     // Load tensor locations.
     __ LoadTensorAddress(aptr, a);
     __ LoadTensorAddress(bptr, b);
     __ xorq(idx, idx);
     for (int i = 0; i < adders; ++i) {
-      __ vxorps(sum[i], sum[i], sum[i]);
+      __ vxorps(sum[i].ymm(), sum[i].ymm(), sum[i].ymm());
     }
 
     // Outer loop over elements.
@@ -985,17 +1073,19 @@ class AVXFltDotProduct : public Kernel {
     for (int i = 0; i < unrolls; ++i) {
       // Load a[idx:idx+8].
       int disp = 8 * i * sizeof(float);
-      __ vmovaps(elem[i], Operand(aptr, idx, times_4, disp));
+      __ vmovaps(elem[i].ymm(), Operand(aptr, idx, times_4, disp));
     }
     for (int i = 0; i < unrolls; ++i) {
       // Multiply a[idx:idx+8] with b[idx:idx+8] and add to sum.
       int disp = 8 * i * sizeof(float);
+      int a = i % adders;
       if (masm->Enabled(FMA3)) {
-        __ vfmadd231ps(sum[i % adders], elem[i],
+        __ vfmadd231ps(sum[a].ymm(), elem[i].ymm(),
                        Operand(bptr, idx, times_4, disp));
       } else {
-        __ vmulps(elem[i], elem[i], Operand(bptr, idx, times_4, disp));
-        __ vaddps(sum[i % adders], sum[i % adders], elem[i]);
+        __ vmulps(elem[i].ymm(), elem[i].ymm(),
+                  Operand(bptr, idx, times_4, disp));
+        __ vaddps(sum[a].ymm(), sum[a].ymm(), elem[i].ymm());
       }
     }
 
@@ -1008,24 +1098,24 @@ class AVXFltDotProduct : public Kernel {
 
     // Sum adders in sum[0].
     if (adders == 4) {
-      __ vaddps(sum[0], sum[0], sum[2]);
-      __ vaddps(sum[1], sum[1], sum[3]);
-      __ vaddps(sum[0], sum[0], sum[1]);
+      __ vaddps(sum[0].ymm(), sum[0].ymm(), sum[2].ymm());
+      __ vaddps(sum[1].ymm(), sum[1].ymm(), sum[3].ymm());
+      __ vaddps(sum[0].ymm(), sum[0].ymm(), sum[1].ymm());
     } else {
       for (int i = 1; i < adders; ++i) {
-        __ vaddps(sum[0], sum[0], sum[i]);
+        __ vaddps(sum[0].ymm(), sum[0].ymm(), sum[i].ymm());
       }
     }
 
     // Add elements in sum[0] horizontally.
-    __ vperm2f128(acc, sum[0], sum[0], 1);
-    __ vhaddps(sum[0], sum[0], acc);
-    __ vhaddps(sum[0], sum[0], sum[0]);
-    __ vhaddps(sum[0], sum[0], sum[0]);
+    __ vperm2f128(acc.ymm(), sum[0].ymm(), sum[0].ymm(), 1);
+    __ vhaddps(sum[0].ymm(), sum[0].ymm(), acc.ymm());
+    __ vhaddps(sum[0].ymm(), sum[0].ymm(), sum[0].ymm());
+    __ vhaddps(sum[0].ymm(), sum[0].ymm(), sum[0].ymm());
 
     // Save result to c.
     __ LoadTensorAddress(cptr, c);
-    __ vmovss(Operand(cptr), sum[0]);
+    __ vmovss(Operand(cptr), sum[0].ymm());
   }
 };
 
@@ -1084,6 +1174,7 @@ class AVXFltAssignAddOuter : public Kernel {
 
     // FMA is not strict math compatible.
     bool fma = masm->Enabled(FMA3) && !step->GetAttr("strict", false);
+    bool avx512 = masm->Enabled(AVX512F);
 
     // Get matrix dimensions.
     int rows = c->dim(0);
@@ -1102,17 +1193,17 @@ class AVXFltAssignAddOuter : public Kernel {
     Register row = masm->rr().alloc();
 
     // Allocate SIMD registers.
-    std::vector<YMMRegister> areg;
-    std::vector<YMMRegister> breg;
-    std::vector<YMMRegister> creg;
-    std::vector<YMMRegister> acc;
+    std::vector<ZMMRegister> areg;
+    std::vector<ZMMRegister> breg;
+    std::vector<ZMMRegister> creg;
+    std::vector<ZMMRegister> acc;
     for (int i = 0; i < kRowRegs; ++i) {
-      areg.push_back(masm->mm().allocy());
+      areg.push_back(masm->mm().allocz(avx512));
     }
     for (int i = 0; i < kColRegs; ++i) {
-      breg.push_back(masm->mm().allocy());
-      creg.push_back(masm->mm().allocy());
-      acc.push_back(masm->mm().allocy());
+      breg.push_back(masm->mm().allocz(avx512));
+      creg.push_back(masm->mm().allocz(avx512));
+      acc.push_back(masm->mm().allocz(avx512));
     }
 
     // Load tensor locations.
@@ -1144,7 +1235,7 @@ class AVXFltAssignAddOuter : public Kernel {
       // Load a[row] block.
       for (int r = 0; r < rowblk; ++r) {
         int disp = r * sizeof(float);
-        __ vbroadcastss(areg[r], Operand(aptr, row, times_4, disp));
+        __ vbroadcastss(areg[r].ymm(), Operand(aptr, row, times_4, disp));
       }
 
       // Compute columns in blocks.
@@ -1157,21 +1248,21 @@ class AVXFltAssignAddOuter : public Kernel {
         // Load b[col] block.
         for (int c = 0; c < kColRegs; ++c) {
           int disp = c * 8 * sizeof(float);
-          __ vmovaps(breg[c], Operand(bptr, col, times_4, disp));
+          __ vmovaps(breg[c].ymm(), Operand(bptr, col, times_4, disp));
         }
 
         // Multiply a[row] block with b[col] block and add to c[row,col] block.
         for (int r = 0; r < rowblk; ++r) {
           for (int c = 0; c < kColRegs; ++c) {
             int disp = r * rowsize + c * 8 * sizeof(float);
-            __ vmovaps(creg[c], Operand(cptr, col, times_4, disp));
+            __ vmovaps(creg[c].ymm(), Operand(cptr, col, times_4, disp));
             if (fma) {
-              __ vfmadd231ps(creg[c], areg[r], breg[c]);
+              __ vfmadd231ps(creg[c].ymm(), areg[r].ymm(), breg[c].ymm());
             } else {
-              __ vmulps(acc[c], areg[r], breg[c]);
-              __ vaddps(creg[c], creg[c], acc[c]);
+              __ vmulps(acc[c].ymm(), areg[r].ymm(), breg[c].ymm());
+              __ vaddps(creg[c].ymm(), creg[c].ymm(), acc[c].ymm());
             }
-            __ vmovaps(Operand(cptr, col, times_4, disp), creg[c]);
+            __ vmovaps(Operand(cptr, col, times_4, disp), creg[c].ymm());
           }
         }
 
@@ -1187,19 +1278,19 @@ class AVXFltAssignAddOuter : public Kernel {
       int left = remaining_cols;
       while (left >= 8) {
         // Load b[col].
-        __ vmovaps(breg[0], Operand(bptr, coldisp));
+        __ vmovaps(breg[0].ymm(), Operand(bptr, coldisp));
 
         // Multiply a[row] block with b[col] and add to c[row,col] block.
         for (int r = 0; r < rowblk; ++r) {
           int disp = r * rowsize + coldisp;
-          __ vmovaps(creg[0], Operand(cptr, disp));
+          __ vmovaps(creg[0].ymm(), Operand(cptr, disp));
           if (fma) {
-            __ vfmadd231ps(creg[0], areg[r], breg[0]);
+            __ vfmadd231ps(creg[0].ymm(), areg[r].ymm(), breg[0].ymm());
           } else {
-            __ vmulps(acc[0], areg[r], breg[0]);
-            __ vaddps(creg[0], creg[0], acc[0]);
+            __ vmulps(acc[0].ymm(), areg[r].ymm(), breg[0].ymm());
+            __ vaddps(creg[0].ymm(), creg[0].ymm(), acc[0].ymm());
           }
-          __ vmovaps(Operand(cptr, disp), creg[0]);
+          __ vmovaps(Operand(cptr, disp), creg[0].ymm());
         }
 
         left -= 8;
