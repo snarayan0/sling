@@ -106,7 +106,7 @@ class AVXFltVecMatMulVBase : public AVXVecMatMulBase {
 
     // Align to one SIMD register.
     bool avx512 = CPU::Enabled(AVX512F);
-    int byte_alignment = avx512 ? 32 : 64;
+    int byte_alignment = avx512 ? 64 : 32;
     x->SetMiniumAlignment(byte_alignment);
     W->SetMiniumAlignment(byte_alignment);
     y->SetMiniumAlignment(byte_alignment);
@@ -1155,14 +1155,15 @@ class AVXFltAssignAddOuter : public Kernel {
     Tensor *a = step->input(1);
     Tensor *b = step->input(2);
 
-    // Align to ymm register.
-    int byte_alignment = 256 / 8;
+    // Align to SIMD register.
+    bool avx512 = CPU::Enabled(AVX512F);
+    int byte_alignment = avx512 ? 64 : 32;
     a->SetMiniumAlignment(byte_alignment);
     b->SetMiniumAlignment(byte_alignment);
     c->SetMiniumAlignment(byte_alignment);
 
     // Ensure aligned loads on rows.
-    c->MinAlign({8, 1});
+    c->MinAlign({avx512 ? 16 : 8, 1});
     c->SetRequiredOrder(ROW_MAJOR);
   }
 
@@ -1177,10 +1178,11 @@ class AVXFltAssignAddOuter : public Kernel {
     bool avx512 = masm->Enabled(AVX512F);
 
     // Get matrix dimensions.
+    int vecsize = avx512 ? 16 : 8;
     int rows = c->dim(0);
     int cols = c->dim(1);
     int rowsize = c->stride(0);
-    int colblk = 8 * kColRegs;
+    int colblk = vecsize * kColRegs;
     int main_cols = (cols / colblk) * colblk;
     int remaining_cols = cols - main_cols;
     int main_rows = (rows / kRowRegs) * kRowRegs;
@@ -1211,6 +1213,12 @@ class AVXFltAssignAddOuter : public Kernel {
     __ LoadTensorAddress(aptr, a);
     __ LoadTensorAddress(bptr, b);
 
+    // Initialize mask.
+    OpmaskRegister mask = masm->kk().alloc();
+    if (avx512 && remaining_cols > 0) {
+      __ LoadMask(remaining_cols, mask);
+    }
+
     // First compute rows in blocks (stage 0) and then the remaining ones one
     // row at a time (stage 1).
     __ xorq(row, row);
@@ -1235,7 +1243,11 @@ class AVXFltAssignAddOuter : public Kernel {
       // Load a[row] block.
       for (int r = 0; r < rowblk; ++r) {
         int disp = r * sizeof(float);
-        __ vbroadcastss(areg[r].ymm(), Operand(aptr, row, times_4, disp));
+        if (avx512) {
+          __ vbroadcastss(areg[r], Operand(aptr, row, times_4, disp));
+        } else {
+          __ vbroadcastss(areg[r].ymm(), Operand(aptr, row, times_4, disp));
+        }
       }
 
       // Compute columns in blocks.
@@ -1247,98 +1259,124 @@ class AVXFltAssignAddOuter : public Kernel {
 
         // Load b[col] block.
         for (int c = 0; c < kColRegs; ++c) {
-          int disp = c * 8 * sizeof(float);
-          __ vmovaps(breg[c].ymm(), Operand(bptr, col, times_4, disp));
+          int disp = c * vecsize * sizeof(float);
+          if (avx512) {
+            __ vmovaps(breg[c], Operand(bptr, col, times_4, disp));
+          } else {
+            __ vmovaps(breg[c].ymm(), Operand(bptr, col, times_4, disp));
+          }
         }
 
         // Multiply a[row] block with b[col] block and add to c[row,col] block.
         for (int r = 0; r < rowblk; ++r) {
           for (int c = 0; c < kColRegs; ++c) {
-            int disp = r * rowsize + c * 8 * sizeof(float);
-            __ vmovaps(creg[c].ymm(), Operand(cptr, col, times_4, disp));
-            if (fma) {
-              __ vfmadd231ps(creg[c].ymm(), areg[r].ymm(), breg[c].ymm());
+            int disp = r * rowsize + c * vecsize * sizeof(float);
+            if (avx512) {
+              __ vmovaps(creg[c], Operand(cptr, col, times_4, disp));
+              __ vfmadd231ps(creg[c], areg[r], breg[c]);
+              __ vmovaps(Operand(cptr, col, times_4, disp), creg[c]);
             } else {
-              __ vmulps(acc[c].ymm(), areg[r].ymm(), breg[c].ymm());
-              __ vaddps(creg[c].ymm(), creg[c].ymm(), acc[c].ymm());
+              __ vmovaps(creg[c].ymm(), Operand(cptr, col, times_4, disp));
+              if (fma) {
+                __ vfmadd231ps(creg[c].ymm(), areg[r].ymm(), breg[c].ymm());
+              } else {
+                __ vmulps(acc[c].ymm(), areg[r].ymm(), breg[c].ymm());
+                __ vaddps(creg[c].ymm(), creg[c].ymm(), acc[c].ymm());
+              }
+              __ vmovaps(Operand(cptr, col, times_4, disp), creg[c].ymm());
             }
-            __ vmovaps(Operand(cptr, col, times_4, disp), creg[c].ymm());
           }
         }
 
-        if (main_cols > 8 * rowblk) {
-          __ addq(col, Immediate(8 * rowblk));
+        if (main_cols > vecsize * rowblk) {
+          __ addq(col, Immediate(vecsize * rowblk));
           __ cmpq(col, Immediate(main_cols));
           __ j(less, &l2);
         }
       }
 
-      // Compute remaining columns, first 8 floats at a time using AVX.
+      // Compute remaining columns.
       int coldisp = main_cols * sizeof(float);
       int left = remaining_cols;
-      while (left >= 8) {
-        // Load b[col].
-        __ vmovaps(breg[0].ymm(), Operand(bptr, coldisp));
+      if (avx512) {
+        if (remaining_cols > 0) {
+          // Load b[col].
+          __ vmovaps(breg[0], Operand(bptr, coldisp), Mask(mask, zeroing));
 
-        // Multiply a[row] block with b[col] and add to c[row,col] block.
-        for (int r = 0; r < rowblk; ++r) {
-          int disp = r * rowsize + coldisp;
-          __ vmovaps(creg[0].ymm(), Operand(cptr, disp));
-          if (fma) {
-            __ vfmadd231ps(creg[0].ymm(), areg[r].ymm(), breg[0].ymm());
-          } else {
-            __ vmulps(acc[0].ymm(), areg[r].ymm(), breg[0].ymm());
-            __ vaddps(creg[0].ymm(), creg[0].ymm(), acc[0].ymm());
+          // Multiply a[row] block with b[col] and add to c[row,col] block.
+          for (int r = 0; r < rowblk; ++r) {
+            int disp = r * rowsize + coldisp;
+            __ vmovaps(creg[0], Operand(cptr, disp), Mask(mask, zeroing));
+            __ vfmadd231ps(creg[0], areg[r], breg[0]);
+            __ vmovaps(Operand(cptr, disp), creg[0], Mask(mask, merging));
           }
-          __ vmovaps(Operand(cptr, disp), creg[0].ymm());
+        }
+      } else {
+        // First 8 floats at a time using AVX.
+        while (left >= 8) {
+          // Load b[col].
+          __ vmovaps(breg[0].ymm(), Operand(bptr, coldisp));
+
+          // Multiply a[row] block with b[col] and add to c[row,col] block.
+          for (int r = 0; r < rowblk; ++r) {
+            int disp = r * rowsize + coldisp;
+            __ vmovaps(creg[0].ymm(), Operand(cptr, disp));
+            if (fma) {
+              __ vfmadd231ps(creg[0].ymm(), areg[r].ymm(), breg[0].ymm());
+            } else {
+              __ vmulps(acc[0].ymm(), areg[r].ymm(), breg[0].ymm());
+              __ vaddps(creg[0].ymm(), creg[0].ymm(), acc[0].ymm());
+            }
+            __ vmovaps(Operand(cptr, disp), creg[0].ymm());
+          }
+
+          left -= 8;
+          coldisp += 8 * sizeof(float);
         }
 
-        left -= 8;
-        coldisp += 8 * sizeof(float);
-      }
+        // Compute next four columns using SSE.
+        if (left >= 4) {
+          // Load b[col].
+          __ vmovaps(breg[0].xmm(), Operand(bptr, coldisp));
 
-      // Compute next four columns using SSE.
-      if (left >= 4) {
-        // Load b[col].
-        __ vmovaps(breg[0].xmm(), Operand(bptr, coldisp));
-
-        // Multiply a[row] block with b[col] and add to c[row,col] block.
-        for (int r = 0; r < rowblk; ++r) {
-          int disp = r * rowsize + coldisp;
-          __ vmovaps(creg[0].xmm(), Operand(cptr, disp));
-          if (fma) {
-            __ vfmadd231ps(creg[0].xmm(), areg[r].xmm(), breg[0].xmm());
-          } else {
-            __ vmulps(acc[0].xmm(), areg[r].xmm(), breg[0].xmm());
-            __ vaddps(creg[0].xmm(), creg[0].xmm(), acc[0].xmm());
+          // Multiply a[row] block with b[col] and add to c[row,col] block.
+          for (int r = 0; r < rowblk; ++r) {
+            int disp = r * rowsize + coldisp;
+            __ vmovaps(creg[0].xmm(), Operand(cptr, disp));
+            if (fma) {
+              __ vfmadd231ps(creg[0].xmm(), areg[r].xmm(), breg[0].xmm());
+            } else {
+              __ vmulps(acc[0].xmm(), areg[r].xmm(), breg[0].xmm());
+              __ vaddps(creg[0].xmm(), creg[0].xmm(), acc[0].xmm());
+            }
+            __ vmovaps(Operand(cptr, disp), creg[0].xmm());
           }
-          __ vmovaps(Operand(cptr, disp), creg[0].xmm());
+
+          left -= 4;
+          coldisp += 4 * sizeof(float);
         }
 
-        left -= 4;
-        coldisp += 4 * sizeof(float);
-      }
+        // Compute remaining remaining columns (0-3).
+        while (left > 0) {
+          // Load b[col].
+          __ vmovss(breg[0].xmm(), Operand(bptr, coldisp));
 
-      // Compute remaining remaining columns (0-3).
-      while (left > 0) {
-        // Load b[col].
-        __ vmovss(breg[0].xmm(), Operand(bptr, coldisp));
-
-        // Multiply a[row] block with b[col] and add to c[row,col] block.
-        for (int r = 0; r < rowblk; ++r) {
-          int disp = r * rowsize + coldisp;
-          __ vmovss(creg[0].xmm(), Operand(cptr, disp));
-          if (fma) {
-            __ vfmadd231ss(creg[0].xmm(), areg[r].xmm(), breg[0].xmm());
-          } else {
-            __ vmulss(acc[0].xmm(), areg[r].xmm(), breg[0].xmm());
-            __ vaddss(creg[0].xmm(), creg[0].xmm(), acc[0].xmm());
+          // Multiply a[row] block with b[col] and add to c[row,col] block.
+          for (int r = 0; r < rowblk; ++r) {
+            int disp = r * rowsize + coldisp;
+            __ vmovss(creg[0].xmm(), Operand(cptr, disp));
+            if (fma) {
+              __ vfmadd231ss(creg[0].xmm(), areg[r].xmm(), breg[0].xmm());
+            } else {
+              __ vmulss(acc[0].xmm(), areg[r].xmm(), breg[0].xmm());
+              __ vaddss(creg[0].xmm(), creg[0].xmm(), acc[0].xmm());
+            }
+            __ vmovss(Operand(cptr, disp), creg[0].xmm());
           }
-          __ vmovss(Operand(cptr, disp), creg[0].xmm());
-        }
 
-        left -= 1;
-        coldisp += sizeof(float);
+          left -= 1;
+          coldisp += sizeof(float);
+        }
       }
 
       // Next row block.
