@@ -775,15 +775,17 @@ class AVXFltMatMatMul : public Kernel {
     if (b.dim(1) != c.dim(1)) return false;
 
     // Check alignment.
+    bool avx512 = CPU::Enabled(AVX512F);
+    int align = avx512 ? 16 : 8;
     if (transpose_a) {
-      if (!A->SupportsAlignment({8, 1})) return false;
+      if (!A->SupportsAlignment({align, 1})) return false;
     } else {
-      if (!A->SupportsAlignment({1, 8})) return false;
+      if (!A->SupportsAlignment({1, align})) return false;
     }
     if (transpose_b) {
-      if (!B->SupportsAlignment({1, 8})) return false;
+      if (!B->SupportsAlignment({1, align})) return false;
     } else {
-      if (!B->SupportsAlignment({8, 1})) return false;
+      if (!B->SupportsAlignment({align, 1})) return false;
     }
 
     // Check order.
@@ -799,23 +801,25 @@ class AVXFltMatMatMul : public Kernel {
     Tensor *A = step->input(0);
     Tensor *B = step->input(1);
     Tensor *C = step->output(0);
+    bool avx512 = CPU::Enabled(AVX512F);
 
     // Set alignment requirements.
+    int align = avx512 ? 16 : 8;
     bool transpose_a = step->GetAttr("transpose_a", false);
     bool transpose_b = step->GetAttr("transpose_b", false);
     if (transpose_a) {
-      A->MinAlign({8, 1});
+      A->MinAlign({align, 1});
     } else {
-      A->MinAlign({1, 8});
+      A->MinAlign({1, align});
     }
     if (transpose_b) {
-      B->MinAlign({1, 8});
+      B->MinAlign({1, align});
     } else {
-      B->MinAlign({8, 1});
+      B->MinAlign({align, 1});
     }
 
-    A->SetMiniumAlignment(32);
-    B->SetMiniumAlignment(32);
+    A->SetMiniumAlignment(align * sizeof(float));
+    B->SetMiniumAlignment(align * sizeof(float));
 
     // Set order requirements.
     A->SetRequiredOrder(transpose_a ? COLUMN_MAJOR : ROW_MAJOR);
@@ -844,9 +848,10 @@ class AVXFltMatMatMul : public Kernel {
 
     // Compute the number of unrolls and adders.
     bool avx512 = masm->Enabled(AVX512F);
+    int vecsize = avx512 ? 16 : 8;
     int unrolls = 1;
     for (int i = 2; i <= kMaxUnrolls; ++i) {
-      if (B->aligned(b_row_dim) % (i * 8) == 0) unrolls = i;
+      if (B->aligned(b_row_dim) % (i * vecsize) == 0) unrolls = i;
     }
     int adders = unrolls;
     if (adders > kMaxAdders) adders = kMaxAdders;
@@ -890,23 +895,33 @@ class AVXFltMatMatMul : public Kernel {
     __ LoopStart(&l2);
     __ xorq(k, k);
     for (int n = 0; n < adders; ++n) {
-      __ vxorps(sum[n].ymm(), sum[n].ymm(), sum[n].ymm());
+      if (avx512) {
+        __ vxorps(sum[n], sum[n], sum[n]);
+      } else {
+        __ vxorps(sum[n].ymm(), sum[n].ymm(), sum[n].ymm());
+      }
     }
 
     // Compute dot product of row in A and column in B.
     // C[i,j] = sum_k A[i,k] * B[k,j].
     __ LoopStart(&l3);
     for (int n = 0; n < unrolls; ++n) {
-      // Load A[i,k:k+8].
-      int disp = 8 * n * sizeof(float);
-      __ vmovaps(elem[n].ymm(), Operand(a, k, times_4, disp));
+      // Load A[i,k:k+v].
+      int disp = vecsize * n * sizeof(float);
+      if (avx512) {
+        __ vmovaps(elem[n], Operand(a, k, times_4, disp));
+      } else {
+        __ vmovaps(elem[n].ymm(), Operand(a, k, times_4, disp));
+      }
     }
 
     for (int n = 0; n < unrolls; ++n) {
-      // Multiply A[i,k:k+8] with B[k:k+8,j] and add to sum.
-      int disp = 8 * n * sizeof(float);
+      // Multiply A[i,k:k+v] with B[k:k+v,j] and add to sum.
+      int disp = vecsize * n * sizeof(float);
       int a = n % adders;
-      if (masm->Enabled(FMA3)) {
+      if (avx512) {
+        __ vfmadd231ps(sum[a], elem[n], Operand(b_row, k, times_4, disp));
+      } else if (masm->Enabled(FMA3)) {
         __ vfmadd231ps(sum[a].ymm(), elem[n].ymm(),
                        Operand(b_row, k, times_4, disp));
       } else {
@@ -916,22 +931,38 @@ class AVXFltMatMatMul : public Kernel {
       }
     }
 
-    __ addq(k, Immediate(8 * unrolls));
+    __ addq(k, Immediate(vecsize * unrolls));
     __ cmpq(k, Immediate(A->dim(a_col_dim)));
     __ j(less, &l3);
 
     // Sum adders in sum[0].
-    if (adders == 4) {
-      __ vaddps(sum[0].ymm(), sum[0].ymm(), sum[2].ymm());
-      __ vaddps(sum[1].ymm(), sum[1].ymm(), sum[3].ymm());
-      __ vaddps(sum[0].ymm(), sum[0].ymm(), sum[1].ymm());
+    if (avx512) {
+      if (adders == 4) {
+        __ vaddps(sum[0], sum[0], sum[2]);
+        __ vaddps(sum[1], sum[1], sum[3]);
+        __ vaddps(sum[0], sum[0], sum[1]);
+      } else {
+        for (int n = 1; n < adders; ++n) {
+          __ vaddps(sum[0], sum[0], sum[n]);
+        }
+      }
     } else {
-      for (int n = 1; n < adders; ++n) {
-        __ vaddps(sum[0].ymm(), sum[0].ymm(), sum[n].ymm());
+      if (adders == 4) {
+        __ vaddps(sum[0].ymm(), sum[0].ymm(), sum[2].ymm());
+        __ vaddps(sum[1].ymm(), sum[1].ymm(), sum[3].ymm());
+        __ vaddps(sum[0].ymm(), sum[0].ymm(), sum[1].ymm());
+      } else {
+        for (int n = 1; n < adders; ++n) {
+          __ vaddps(sum[0].ymm(), sum[0].ymm(), sum[n].ymm());
+        }
       }
     }
 
     // Add elements in sum[0] horizontally.
+    if (avx512) {
+      __ vshuff32x4(acc, sum[0], sum[0], 0x0E);
+      __ vaddps(sum[0], sum[0], acc);
+    }
     __ vperm2f128(acc.ymm(), sum[0].ymm(), sum[0].ymm(), 1);
     __ vhaddps(sum[0].ymm(), sum[0].ymm(), acc.ymm());
     __ vhaddps(sum[0].ymm(), sum[0].ymm(), sum[0].ymm());
