@@ -93,11 +93,6 @@ class Operand {
           int32_t disp = 0,
           LoadMode load = full);
 
-  // Offset from existing memory operand.
-  // Offset is added to existing displacement as 32-bit signed values and
-  // this must not overflow.
-  Operand(const Operand &base, int32_t offset);
-
   // [rip + disp/r]
   explicit Operand(Label *label, LoadMode load = full);
 
@@ -3162,7 +3157,7 @@ class Assembler : public CodeGenerator {
   // 1- or 4-byte offset for a memory operand.  Also encodes
   // the second operand of the operation, a register or operation
   // subcode, into the reg field of the ModR/M byte.
-  void emit_operand(Register reg, const Operand &adr, int sl = 0) {
+  void emit_operand(Register reg, const Operand &adr, int sl = 0, int tl = 0) {
     emit_operand(reg.low_bits(), adr, sl);
   }
 
@@ -3172,7 +3167,8 @@ class Assembler : public CodeGenerator {
   // The sl parameter encodes the instruction suffix length, i.e. the number
   // of bytes in the instruction after the operand. Currently only suffix
   // lengths of 0 and 1 are supported.
-  void emit_operand(int rm, const Operand &adr, int sl = 0);
+  // The tl parameter encodes the tuple size used for EVEX disp8*N compression.
+  void emit_operand(int rm, const Operand &adr, int sl = 0, int tl = 0);
 
   // Emit a ModR/M byte with registers coded in the reg and rm_reg fields.
   void emit_modrm(Register reg, Register rm_reg) {
@@ -3195,7 +3191,8 @@ class Assembler : public CodeGenerator {
   void emit_sse_operand(XMMRegister dst);
 
   void emit_sse_operand(ZMMRegister dst, ZMMRegister src);
-  void emit_sse_operand(ZMMRegister reg, const Operand &adr, int sl = 0);
+  void emit_sse_operand(ZMMRegister reg, const Operand &adr,
+                        int sl = 0, int tl = 0);
   void emit_sse_operand(ZMMRegister dst, Register src);
   void emit_sse_operand(Register dst, ZMMRegister src);
 

@@ -118,53 +118,6 @@ Operand::Operand(Label *label, LoadMode load) : rex_(0), len_(1), load_(load) {
   set_disp64(reinterpret_cast<intptr_t>(label));
 }
 
-Operand::Operand(const Operand &operand, int32_t offset) {
-  DCHECK(operand.len_ >= 1);
-  // Operand encodes REX ModR/M [SIB] [Disp].
-  byte modrm = operand.buf_[0];
-  DCHECK(modrm < 0xC0);  // Disallow mode 3 (register target).
-  bool has_sib = ((modrm & 0x07) == 0x04);
-  byte mode = modrm & 0xC0;
-  int disp_offset = has_sib ? 2 : 1;
-  int base_reg = (has_sib ? operand.buf_[1] : modrm) & 0x07;
-  // Mode 0 with rbp/r13 as ModR/M or SIB base register always has a 32-bit
-  // displacement.
-  bool is_baseless = (mode == 0) && (base_reg == 0x05);  // No base or RIP base.
-  int32_t disp_value = 0;
-  if (mode == 0x80 || is_baseless) {
-    // Mode 2 or mode 0 with rbp/r13 as base: Word displacement.
-    disp_value = *bit_cast<const int32_t *>(&operand.buf_[disp_offset]);
-  } else if (mode == 0x40) {
-    // Mode 1: Byte displacement.
-    disp_value = static_cast<signed char>(operand.buf_[disp_offset]);
-  }
-
-  // Write new operand with same registers, but with modified displacement.
-  DCHECK(offset >= 0 ? disp_value + offset > disp_value
-                     : disp_value + offset < disp_value);  // No overflow.
-  disp_value += offset;
-  rex_ = operand.rex_;
-  if (!is_int8(disp_value) || is_baseless) {
-    // Need 32 bits of displacement, mode 2 or mode 1 with register rbp/r13.
-    buf_[0] = (modrm & 0x3f) | (is_baseless ? 0x00 : 0x80);
-    len_ = disp_offset + 4;
-    Memory::int32_at(&buf_[disp_offset]) = disp_value;
-  } else if (disp_value != 0 || (base_reg == 0x05)) {
-    // Need 8 bits of displacement.
-    buf_[0] = (modrm & 0x3f) | 0x40;  // Mode 1.
-    len_ = disp_offset + 1;
-    buf_[disp_offset] = static_cast<byte>(disp_value);
-  } else {
-    // Need no displacement.
-    buf_[0] = (modrm & 0x3f);  // Mode 0.
-    len_ = disp_offset;
-  }
-  if (has_sib) {
-    buf_[1] = operand.buf_[1];
-  }
-  load_ = operand.load_;
-}
-
 Assembler::Assembler(void *buffer, int buffer_size)
     : CodeGenerator(buffer, buffer_size) {
   cpu_features_ = CPU::SupportedFeatures();
@@ -4292,7 +4245,7 @@ void Assembler::pshufd(XMMRegister dst, const Operand &src, uint8_t shuffle) {
 // P2:  z  L' L  b  V' a  a  a
 void Assembler::emit_evex_prefix(ZMMRegister reg, ZMMRegister vreg,
                                  ZMMRegister rm, Mask mask, int flags) {
-  DCHECK(Enabled(AVX512F));
+  CHECK(Enabled(AVX512F));
   byte p0 = 0;
   byte p1 = 0x04;
   byte p2 = 0;
@@ -4322,7 +4275,7 @@ void Assembler::emit_evex_prefix(ZMMRegister reg, ZMMRegister vreg,
 
   // Rounding and exception supression (b).
   if (flags & EVEX_ER) {
-    // Static rounding; set rounding model in LL.
+    // Static rounding; set rounding mode in LL.
     p2 |= 0x10;
     if (flags & EVEX_R0) p2 |= 0x20;
     if (flags & EVEX_R1) p2 |= 0x40;
@@ -4340,7 +4293,7 @@ void Assembler::emit_evex_prefix(ZMMRegister reg, ZMMRegister vreg,
 
 void Assembler::emit_evex_prefix(ZMMRegister reg, ZMMRegister vreg,
                                  const Operand &rm, Mask mask, int flags) {
-  DCHECK(Enabled(AVX512F));
+  CHECK(Enabled(AVX512F));
   byte p0 = 0;
   byte p1 = 0x04;
   byte p2 = 0;
@@ -4373,7 +4326,7 @@ void Assembler::emit_evex_prefix(ZMMRegister reg, ZMMRegister vreg,
     // Broadcast memory source operand.
     if (rm.load() == broadcast) p2 |= 0x10;
   } else if (flags & EVEX_ER) {
-    // Static rounding; set rounding model in LL.
+    // Static rounding; set rounding mode in LL.
     p2 |= 0x10;
     if (flags & EVEX_R0) p2 |= 0x20;
     if (flags & EVEX_R1) p2 |= 0x40;
@@ -4389,19 +4342,17 @@ void Assembler::emit_evex_prefix(ZMMRegister reg, ZMMRegister vreg,
   emit(p2);
 }
 
-void Assembler::emit_operand(int code, const Operand &adr, int sl) {
+void Assembler::emit_operand(int code, const Operand &adr, int sl, int tl) {
   DCHECK(is_uint3(code));
-  const unsigned length = adr.len_;
+  unsigned length = adr.len_;
   DCHECK(length > 0);
+  uint8_t modrm = adr.buf_[0];
 
-  // Emit updated ModR/M byte containing the given register.
-  DCHECK((adr.buf_[0] & 0x38) == 0);
-  *pc_++ = adr.buf_[0] | code << 3;
-
-  // Recognize RIP relative addressing.
-  if (adr.buf_[0] == 5) {
+  if (modrm == 5) {
+    // Emit RIP relative addressing.
     DCHECK_EQ(9u, length);
     CHECK(sl == 0 || sl == 1);
+    emit(modrm | code << 3);
     Label *label = *bit_cast<Label *const *>(&adr.buf_[1]);
     if (label->is_bound()) {
       int offset = label->pos() - (pc_offset() + sl) - sizeof(int32_t);
@@ -4417,8 +4368,45 @@ void Assembler::emit_operand(int code, const Operand &adr, int sl) {
       label->link_to(current);
     }
   } else {
+    int32_t disp;
+    bool disp8 = false;
+    bool disp32 = false;
+
+    // Update ModR/M with the given register.
+    DCHECK((modrm & 0x38) == 0);
+    modrm |= code << 3;
+
+    uint8_t mod = modrm >> 6;
+    if (tl > 0 && (mod == 1 || mod == 2)) {
+      // Encode displacement with disp8*N encoding.
+      if (mod == 1) {
+        length -= 1;
+        disp = *bit_cast<const int8_t *>(&adr.buf_[length]);
+      } else {
+        length -= 4;
+        disp = *bit_cast<const int32_t *>(&adr.buf_[length]);
+      }
+      if (disp % tl == 0 && is_int8(disp / tl)) {
+        // Use disp8*N compressed encoding.
+        disp = disp / tl;
+        disp8 = true;
+        modrm = (modrm & 0x3F) | 0x40;
+      } else {
+        // Use disp32 encoding.
+        disp32 = true;
+        modrm = (modrm & 0x3F) | 0x80;
+      }
+    }
+
+    // Emit ModR/M byte.
+    emit(modrm);
+
     // Emit the rest of the encoded operand.
-    for (unsigned i = 1; i < length; i++) *pc_++ = adr.buf_[i];
+    for (unsigned i = 1; i < length; i++) emit(adr.buf_[i]);
+
+    // Emit displacement.
+    if (disp8) emit(disp);
+    if (disp32) emitl(disp);
   }
 }
 
@@ -4730,8 +4718,9 @@ void Assembler::emit_sse_operand(ZMMRegister dst, ZMMRegister src) {
   emit(0xC0 | (dst.low_bits() << 3) | src.low_bits());
 }
 
-void Assembler::emit_sse_operand(ZMMRegister reg, const Operand &adr, int sl) {
-  emit_operand(reg.low_bits(), adr, sl);
+void Assembler::emit_sse_operand(ZMMRegister reg, const Operand &adr,
+                                 int sl, int tl) {
+  emit_operand(reg.low_bits(), adr, sl, tl);
 }
 
 void Assembler::emit_sse_operand(ZMMRegister dst, Register src) {
@@ -5040,6 +5029,19 @@ void Assembler::kinstr(byte op, Register dst, OpmaskRegister k1,
   emit_sse_operand(idst, ik1);
 }
 
+static int tuple_size(ZMMRegister::SizeCode size) {
+  switch (size) {
+    case ZMMRegister::VectorLength128: return 16;
+    case ZMMRegister::VectorLength256: return 32;
+    case ZMMRegister::VectorLength512: return 64;
+    default: return 0;
+  }
+}
+
+static int tuple_size(ZMMRegister reg) {
+  return tuple_size(reg.size());
+}
+
 void Assembler::zinstr(byte op, ZMMRegister dst, ZMMRegister src,
                        int8_t imm8, Mask mask, int flags) {
   EnsureSpace ensure_space(this);
@@ -5054,7 +5056,7 @@ void Assembler::zinstr(byte op, ZMMRegister dst, const Operand &src,
   EnsureSpace ensure_space(this);
   emit_evex_prefix(dst, zmm0, src, mask, flags);
   emit(op);
-  emit_sse_operand(dst, src, (flags & EVEX_IMM) ? 1 : 0);
+  emit_sse_operand(dst, src, (flags & EVEX_IMM) ? 1 : 0, tuple_size(dst));
   if (flags & EVEX_IMM) emit(imm8);
 }
 
@@ -5063,7 +5065,7 @@ void Assembler::zinstr(byte op, const Operand &dst, ZMMRegister src,
   EnsureSpace ensure_space(this);
   emit_evex_prefix(src, zmm0, dst, mask, flags);
   emit(op);
-  emit_sse_operand(src, dst, (flags & EVEX_IMM) ? 1 : 0);
+  emit_sse_operand(src, dst, (flags & EVEX_IMM) ? 1 : 0, tuple_size(src));
   if (flags & EVEX_IMM) emit(imm8);
 }
 
@@ -5083,7 +5085,7 @@ void Assembler::zinstr(byte op, ZMMRegister dst, ZMMRegister src1,
   EnsureSpace ensure_space(this);
   emit_evex_prefix(dst, src1, src2, mask, flags);
   emit(op);
-  emit_sse_operand(dst, src2, (flags & EVEX_IMM) ? 1 : 0);
+  emit_sse_operand(dst, src2, (flags & EVEX_IMM) ? 1 : 0, tuple_size(dst));
   if (flags & EVEX_IMM) emit(imm8);
 }
 
@@ -5093,7 +5095,7 @@ void Assembler::zinstr(byte op, const Operand &dst, ZMMRegister src1,
   EnsureSpace ensure_space(this);
   emit_evex_prefix(src2, src1, dst, mask, flags);
   emit(op);
-  emit_sse_operand(src2, dst, (flags & EVEX_IMM) ? 1 : 0);
+  emit_sse_operand(src2, dst, (flags & EVEX_IMM) ? 1 : 0, tuple_size(src2));
   if (flags & EVEX_IMM) emit(imm8);
 }
 
@@ -5134,7 +5136,7 @@ void Assembler::zinstr(byte op, Register dst, const Operand &src,
   ZMMRegister idst = ZMMRegister::from_code(dst.code());
   emit_evex_prefix(idst, zmm0, src, mask, flags);
   emit(op);
-  emit_sse_operand(idst, src, (flags & EVEX_IMM) ? 1 : 0);
+  emit_sse_operand(idst, src, (flags & EVEX_IMM) ? 1 : 0, 8);
   if (flags & EVEX_IMM) emit(imm8);
 }
 
@@ -5156,7 +5158,7 @@ void Assembler::zinstr(byte op, OpmaskRegister k, ZMMRegister src1,
   ZMMRegister ik = ZMMRegister::from_code(k.code());
   emit_evex_prefix(ik, src1, src2, mask, flags);
   emit(op);
-  emit_sse_operand(ik, src2, (flags & EVEX_IMM) ? 1 : 0);
+  emit_sse_operand(ik, src2, (flags & EVEX_IMM) ? 1 : 0, tuple_size(src1));
   if (flags & EVEX_IMM) emit(imm8);
 }
 
