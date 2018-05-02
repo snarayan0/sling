@@ -4368,7 +4368,7 @@ void Assembler::emit_operand(int code, const Operand &adr, int sl, int tl) {
       label->link_to(current);
     }
   } else {
-    int32_t disp;
+    int32_t disp = 0;
     bool disp8 = false;
     bool disp32 = false;
 
