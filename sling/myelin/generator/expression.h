@@ -77,8 +77,7 @@ class ExpressionGenerator {
   int RegisterNumber(Express::VarType type, int id) const;
 
   // Select expression generator for expression that is supported by the CPU.
-  static ExpressionGenerator *Select(const Express &expr,
-                                     Type type, int size);
+  static ExpressionGenerator *Select(const Express &expr, Type type, int size);
 
  protected:
   // Comparison types. These are Intel comparison predicates used by CMPSS.

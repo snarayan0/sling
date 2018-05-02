@@ -59,6 +59,7 @@ DEFINE_bool(shuffle, true, "Shuffle training corpus");
 DEFINE_bool(heldout, true, "Test tagger on heldout data");
 DEFINE_int32(threads, cpu_cores, "Number of threads for training");
 DEFINE_int32(rampup, 10, "Number of seconds between thread starts");
+DEFINE_int32(maxrampup, 60, "Maximum thread start delay");
 DEFINE_bool(lock, true, "Locked gradient updates");
 DEFINE_int32(lexthres, 0, "Lexicon threshold");
 DEFINE_string(flow, "", "Flow file for saving trained POS tagger");
@@ -364,7 +365,7 @@ class Tagger {
   // Trainer worker thread.
   void Worker(int index) {
     // Ramp-up peiod.
-    sleep(index * FLAGS_rampup);
+    sleep(std::min(index * FLAGS_rampup, FLAGS_maxrampup));
     num_workers_++;
 
     // Lexical encoder learner.

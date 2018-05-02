@@ -1226,7 +1226,7 @@ class ScatterAdd : public Kernel {
     int minalign = 1;
     if (var->dim(1) >= 4) minalign = 4;
     if (CPU::Enabled(AVX) && var->dim(1) >= 8) minalign = 8;
-    if (CPU::Enabled(AVX512F)) minalign = 16;
+    if (CPU::Enabled(AVX512F) && var->dim(1) >= 16) minalign = 16;
     var->MinAlign({1, minalign});
   }
 
@@ -1331,11 +1331,11 @@ class ScatterAdd : public Kernel {
           __ vmulps(elem[0], factor, Operand(valaddr, disp),
                     Mask(mask, zeroing));
         } else {
-          __ vmovaps(elem[0], Operand(valaddr, disp), Mask(mask, zeroing));
+          __ vmovups(elem[0], Operand(valaddr, disp), Mask(mask, zeroing));
         }
         __ vaddps(elem[0], elem[0], Operand(acc, disp),
                   Mask(mask, zeroing));
-        __ vmovaps(Operand(acc, disp), elem[0], Mask(mask, merging));
+        __ vmovups(Operand(acc, disp), elem[0], Mask(mask, merging));
       }
     } else if (masm->Enabled(AVX)) {
       // Update elements using AVX vectors.

@@ -221,36 +221,46 @@ class Assembler : public CodeGenerator {
 
   // EVEX prefix encodings.
   enum EvexFlags {
-    EVEX_ENDS  = (1 << 0),   // non-destructive source
-    EVEX_ENDD  = (1 << 1),   // non-destructive destination
-    EVEX_EDDS  = (1 << 2),   // destructive destination and source
+    EVEX_ENDS   = (1 << 0),   // non-destructive source
+    EVEX_ENDD   = (1 << 1),   // non-destructive destination
+    EVEX_EDDS   = (1 << 2),   // destructive destination and source
 
-    EVEX_LIG   = (1 << 3),   // EVEX.LL ignored
-    EVEX_L128  = (1 << 4),   // EVEX.LL 128-bit operands
-    EVEX_L256  = (1 << 5),   // EVEX.LL 256-bit operands
-    EVEX_L512  = (1 << 6),   // EVEX.LL 512-bit operands
+    EVEX_LIG    = (1 << 3),   // EVEX.LL ignored
+    EVEX_L128   = (1 << 4),   // EVEX.LL 128-bit operands
+    EVEX_L256   = (1 << 5),   // EVEX.LL 256-bit operands
+    EVEX_L512   = (1 << 6),   // EVEX.LL 512-bit operands
 
-    EVEX_P66   = (1 << 7),   // EVEX.PP 0x66 prefix
-    EVEX_PF2   = (1 << 8),   // EVEX.PP 0xF2 prefix
-    EVEX_PF3   = (1 << 9),   // EVEX.PP 0xF3 prefix
+    EVEX_P66    = (1 << 7),   // EVEX.PP 0x66 prefix
+    EVEX_PF2    = (1 << 8),   // EVEX.PP 0xF2 prefix
+    EVEX_PF3    = (1 << 9),   // EVEX.PP 0xF3 prefix
 
-    EVEX_M0F   = (1 << 10),  // VEX.MM 0x0F leading opcode
-    EVEX_M0F38 = (1 << 11),  // VEX.MM 0x0F38 leading opcode
-    EVEX_M0F3A = (1 << 12),  // VEX.MM 0x0F3A leading opcode
+    EVEX_M0F    = (1 << 10),  // VEX.MM 0x0F leading opcode
+    EVEX_M0F38  = (1 << 11),  // VEX.MM 0x0F38 leading opcode
+    EVEX_M0F3A  = (1 << 12),  // VEX.MM 0x0F3A leading opcode
 
-    EVEX_W0    = (1 << 13),  // EVEX.W=0
-    EVEX_W1    = (1 << 14),  // EVEX.W=1
-    EVEX_WIG   = (1 << 15),  // EVEX.W ignored
+    EVEX_W0     = (1 << 13),  // EVEX.W=0
+    EVEX_W1     = (1 << 14),  // EVEX.W=1
+    EVEX_WIG    = (1 << 15),  // EVEX.W ignored
 
-    EVEX_BCST  = (1 << 16),  // EVEX.B broadcast
-    EVEX_ER    = (1 << 17),  // static-rounding
-    EVEX_SAE   = (1 << 18),  // suppress all exceptions
+    EVEX_BCST   = (1 << 16),  // EVEX.B broadcast
+    EVEX_ER     = (1 << 17),  // static-rounding
+    EVEX_SAE    = (1 << 18),  // suppress all exceptions
 
-    EVEX_ZERO  = (1 << 19),  // EVEX.Z zeroing
-    EVEX_IMM   = (1 << 20),  // immediate operand
+    EVEX_IMM    = (1 << 19),  // immediate operand
 
-    EVEX_R0    = (1 << 21),  // rounding mode bit 0
-    EVEX_R1    = (1 << 22),  // rounding mode bit 1
+    EVEX_R0     = (1 << 20),   // rounding mode bit 0
+    EVEX_R1     = (1 << 21),   // rounding mode bit 1
+
+    EVEX_DT1    = (1 << 22),   // 1-byte data type
+    EVEX_DT2    = (1 << 23),   // 2-byte data type
+    EVEX_DT4    = (1 << 24),   // 4-byte data type
+    EVEX_DT8    = (1 << 25),   // 8-byte data type
+    EVEX_DT16   = (1 << 26),   // 16-byte data type
+    EVEX_DT32   = (1 << 27),   // 32-byte data type
+    EVEX_DT64   = (1 << 28),   // 64-byte data type
+
+    EVEX_BT4    = (1 << 29),   // 4-byte broadcast data type
+    EVEX_BT8    = (1 << 30),   // 8-byte broadcast data type
   };
 
   // Code generation
@@ -3167,8 +3177,8 @@ class Assembler : public CodeGenerator {
   // The sl parameter encodes the instruction suffix length, i.e. the number
   // of bytes in the instruction after the operand. Currently only suffix
   // lengths of 0 and 1 are supported.
-  // The tl parameter encodes the tuple size used for EVEX disp8*N compression.
-  void emit_operand(int rm, const Operand &adr, int sl = 0, int tl = 0);
+  // The ts parameter encodes the tuple size used for EVEX disp8*N compression.
+  void emit_operand(int rm, const Operand &adr, int sl = 0, int ts = 0);
 
   // Emit a ModR/M byte with registers coded in the reg and rm_reg fields.
   void emit_modrm(Register reg, Register rm_reg) {
@@ -3191,8 +3201,7 @@ class Assembler : public CodeGenerator {
   void emit_sse_operand(XMMRegister dst);
 
   void emit_sse_operand(ZMMRegister dst, ZMMRegister src);
-  void emit_sse_operand(ZMMRegister reg, const Operand &adr,
-                        int sl = 0, int tl = 0);
+  void emit_sse_operand(ZMMRegister reg, const Operand &adr, int flags);
   void emit_sse_operand(ZMMRegister dst, Register src);
   void emit_sse_operand(Register dst, ZMMRegister src);
 

@@ -1246,8 +1246,8 @@ class AVXFltAssignAddOuter : public Kernel {
 
     // Initialize mask.
     OpmaskRegister mask = masm->kk().alloc();
-    if (avx512 && remaining_cols > 0) {
-      __ LoadMask(remaining_cols, mask);
+    if (avx512 && remaining_cols % 16 != 0) {
+      __ LoadMask(remaining_cols % 16, mask);
     }
 
     // First compute rows in blocks (stage 0) and then the remaining ones one
@@ -1330,7 +1330,25 @@ class AVXFltAssignAddOuter : public Kernel {
       int coldisp = main_cols * sizeof(float);
       int left = remaining_cols;
       if (avx512) {
-        if (remaining_cols > 0) {
+        // First 16 floats at a time using AVX512 without masking.
+        while (left >= 16) {
+          // Load b[col].
+          __ vmovaps(breg[0], Operand(bptr, coldisp));
+
+          // Multiply a[row] block with b[col] and add to c[row,col] block.
+          for (int r = 0; r < rowblk; ++r) {
+            int disp = r * rowsize + coldisp;
+            __ vmovaps(creg[0], Operand(cptr, disp));
+            __ vfmadd231ps(creg[0], areg[r], breg[0]);
+            __ vmovaps(Operand(cptr, disp), creg[0]);
+          }
+
+          left -= 16;
+          coldisp += 16 * sizeof(float);
+        }
+
+        // Compute remaining columns using AVX512 with masking.
+        if (left > 0) {
           // Load b[col].
           __ vmovaps(breg[0], Operand(bptr, coldisp), Mask(mask, zeroing));
 

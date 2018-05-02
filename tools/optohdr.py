@@ -22,6 +22,7 @@ python tools/optohdr.py > third_party/jit/avx512.h
 
 """
 
+import re
 import string
 
 warnings = False
@@ -83,17 +84,17 @@ for line in fin.readlines():
     if flag == "EVEX":
       pass
     elif flag == "NDS" or flag == "NDD" or flag == "DDS":
-      flags.append("EVEX_E" + flag);
+      flags.append("EVEX_E" + flag)
     elif flag == "128" or flag == "256" or flag == "512":
-      flags.append("EVEX_L" + flag);
+      flags.append("EVEX_L" + flag)
     elif  flag == "LIG":
-      flags.append("EVEX_LIG");
+      flags.append("EVEX_LIG")
     elif flag == "66" or flag == "F2" or flag == "F3":
-      flags.append("EVEX_P" + flag);
+      flags.append("EVEX_P" + flag)
     elif flag == "0F" or flag == "0F38" or flag == "0F3A":
-      flags.append("EVEX_M" + flag);
+      flags.append("EVEX_M" + flag)
     elif flag == "W0" or flag == "W1" or flag == "WIG":
-      flags.append("EVEX_" + flag);
+      flags.append("EVEX_" + flag)
     else:
       print "flag:", flag
 
@@ -135,78 +136,144 @@ for line in fin.readlines():
   er = False
   sae = False
   numargs = 0
+  dt = 0
+  bt = 0
   for a in arguments:
-    arg = ""
-    for c in a:
-      arg += "0" if c.isdigit() else c
+    arg = a
+    arg = re.sub("xmm\d", "xmm0", arg)
+    arg = re.sub("ymm\d", "ymm0", arg)
+    arg = re.sub("zmm\d", "zmm0", arg)
+    arg = re.sub("k\d", "k0", arg)
 
-    if arg in ["{k0}{z}", "{k0}"]:
+    if arg.endswith("{er}"):
+      er = True
+      arg = arg[:-4]
+
+    if arg.endswith("{sae}"):
+      sae = True
+      arg = arg[:-5]
+
+    if arg == "{k0}{z}" or arg == "{k0}":
       mask = True
-    elif arg in ["k0"]:
+    elif arg == "k0":
       args.append("opmask")
       numargs += 1
-    elif arg in ["xmm0", "ymm0", "zmm0"]:
+    elif arg  == "xmm0":
       args.append("zmm")
       numargs += 1
-    elif arg in ["zmm0{sae}"]:
+    elif arg  == "ymm0":
       args.append("zmm")
-      sae = True
       numargs += 1
-    elif arg in ["m00", "m000"]:
-      args.append("mem")
+    elif arg  == "zmm0":
+      args.append("zmm")
       numargs += 1
-    elif arg in ["xmm0/m000",
-                 "ymm0/m000",
-                 "zmm0/m000",
-                 "xmm0/m00",
-                 "xmm0/m000"]:
-      args.append("zmm/mem")
-      numargs += 1
-    elif arg in ["xmm0/m000/m00bcst",
-                 "xmm0/m00/m00bcst",
-                 "ymm0/m000/m00bcst",
-                 "zmm0/m000/m00bcst"]:
-      args.append("zmm/mem")
-      bcst = True
-      numargs += 1
-    elif arg in ["zmm0/m000/m00bcst{er}"]:
-      args.append("zmm/mem")
-      bcst = True
-      er = True
-      numargs += 1
-    elif arg in ["xmm0/m00{er}"]:
-      args.append("zmm/mem")
-      er = True
-      numargs += 1
-    elif arg in ["xmm0/m00",
-                 "xmm0/m000",
-                 "ymm0/m000",
-                 "zmm0/m000"]:
-      args.append("zmm/mem")
-      numargs += 1
-    elif arg in ["xmm0/m00{sae}",
-                 "xmm0/m00{sae}",
-                 "ymm0/m000{sae}"]:
-      args.append("zmm/mem")
-      sae = True
-      numargs += 1
-    elif arg in ["zmm0/m000/m00bcst{sae}", "ymm0/m000/m00bcst{sae}"]:
-      args.append("zmm/mem")
-      bcast = True
-      sae = True
-      numargs += 1
-    elif arg in ["imm0"]:
-      args.append("imm")
-    elif arg in ["r00", "r00", "reg"]:
+
+    elif arg == "r32":
+      dt = 32
       args.append("reg")
       numargs += 1
-    elif arg in ["reg/m00", "r00/m00", "r00/m00", "r/m00"]:
+    elif arg == "r64":
+      dt = 64
+      args.append("reg")
+      numargs += 1
+
+    elif arg == "r/m32" or arg == "reg/m32" or arg == "r32/m32":
+      dt = 32
       args.append("reg/mem")
       numargs += 1
-    elif arg in ["r/m00{er}"]:
+    elif arg == "r/m64" or arg == "r64/m64":
+      dt = 64
       args.append("reg/mem")
-      er = True
       numargs += 1
+
+    elif arg == "m16":
+      dt = 16
+      args.append("mem")
+      numargs += 1
+    elif arg in ["m32"]:
+      dt = 32
+      args.append("mem")
+      numargs += 1
+    elif arg == "m64":
+      dt = 64
+      args.append("mem")
+      numargs += 1
+    elif arg == "m128":
+      dt = 128
+      args.append("mem")
+      numargs += 1
+    elif arg == "m256":
+      dt = 256
+      args.append("mem")
+      numargs += 1
+    elif arg == "m512":
+      dt = 512
+      args.append("mem")
+      numargs += 1
+
+    elif arg  == "zmm0/m512/m64bcst":
+      bt = 64
+      bcst = True
+      args.append("zmm/mem")
+      numargs += 1
+    elif arg  == "zmm0/m512/m32bcst":
+      bt = 32
+      bcst = True
+      args.append("zmm/mem")
+      numargs += 1
+    elif arg  == "zmm0/m512":
+      args.append("zmm/mem")
+      numargs += 1
+
+    elif arg  == "ymm0/m256/m64bcst":
+      bt = 64
+      bcst = True
+      args.append("zmm/mem")
+      numargs += 1
+    elif arg  == "ymm0/m256/m32bcst":
+      bt = 32
+      bcst = True
+      args.append("zmm/mem")
+      numargs += 1
+    elif arg  == "ymm0/m256":
+      args.append("zmm/mem")
+      numargs += 1
+
+    elif arg  == "xmm0/m128/m64bcst":
+      bt = 64
+      bcst = True
+      args.append("zmm/mem")
+      numargs += 1
+    elif arg  == "xmm0/m128/m32bcst":
+      bt = 32
+      bcst = True
+      args.append("zmm/mem")
+      numargs += 1
+    elif arg  == "xmm0/m64/m32bcst":
+      dt = 64
+      bt = 32
+      bcst = True
+      args.append("zmm/mem")
+      numargs += 1
+    elif arg  == "xmm0/m128":
+      args.append("zmm/mem")
+      numargs += 1
+    elif arg  == "xmm0/m64":
+      dt = 64
+      args.append("zmm/mem")
+      numargs += 1
+    elif arg  == "xmm0/m32":
+      dt = 32
+      args.append("zmm/mem")
+      numargs += 1
+    elif arg  == "xmm0/m16":
+      dt = 16
+      args.append("zmm/mem")
+      numargs += 1
+
+    elif arg == "imm8":
+      args.append("imm")
+
     else:
       args.append("XXX " + arg)
 
@@ -221,6 +288,8 @@ for line in fin.readlines():
       print "// Hmm! numargs mismatch"
     method.add_flags(flags)
 
+  if dt != 0: method.add_flag("EVEX_DT" + str(dt / 8))
+  if bt != 0: method.add_flag("EVEX_BT" + str(bt / 8))
   if ireg != -1: method.ireg = ireg
   if mask: method.mask = True
   if bcst: method.bcst = True
@@ -261,47 +330,47 @@ for method in sorted(methods, key=lambda x: x.name):
   for i in range(len(method.args)):
     arg = method.args[i]
     if arg == "opmask":
-      argsigs.append("OpmaskRegister " + argnames[i]);
+      argsigs.append("OpmaskRegister " + argnames[i])
     elif arg == "zmm":
-      argsigs.append("ZMMRegister " + argnames[i]);
+      argsigs.append("ZMMRegister " + argnames[i])
     elif arg == "reg":
-      argsigs.append("Register " + argnames[i]);
+      argsigs.append("Register " + argnames[i])
     elif arg == "mem":
-      argsigs.append("const Operand &" + argnames[i]);
+      argsigs.append("const Operand &" + argnames[i])
     elif arg == "imm":
-      argsigs.append("int8_t imm8");
+      argsigs.append("int8_t imm8")
       imm = True
     else:
-      argsigs.append("!" + arg);
+      argsigs.append("!" + arg)
 
   if method.mask:
-    argsigs.append("Mask mask = nomask");
+    argsigs.append("Mask mask = nomask")
     masking = True
 
   if method.bcst:
-    method.add_flag("EVEX_BCST");
+    method.add_flag("EVEX_BCST")
   elif method.er:
-    argsigs.append("RoundingMode er = kRoundToNearest");
-    method.add_flag("EVEX_ER");
-    method.add_flag("evex_round(er)");
+    argsigs.append("RoundingMode er = kRoundToNearest")
+    method.add_flag("EVEX_ER")
+    method.add_flag("evex_round(er)")
   elif method.sae:
-    method.add_flag("EVEX_SAE");
+    method.add_flag("EVEX_SAE")
 
-  body = "zinstr(0x" + method.opcode;
+  body = "zinstr(0x" + method.opcode
   if method.ireg != -1:
     body += ", zmm" + str(method.ireg)
   for i in range(method.numargs):
-    body += ", " + argnames[i];
+    body += ", " + argnames[i]
   if imm:
-    body += ", imm8";
-    method.add_flag("EVEX_IMM");
+    body += ", imm8"
+    method.add_flag("EVEX_IMM")
   else:
-    body += ", 0";
+    body += ", 0"
 
   if masking:
-    body += ", mask";
+    body += ", mask"
   else:
-    body += ", nomask";
+    body += ", nomask"
   body += ", " + " | ".join(sorted(method.flags))
   body += ");"
 

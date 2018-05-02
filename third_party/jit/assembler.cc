@@ -4342,7 +4342,7 @@ void Assembler::emit_evex_prefix(ZMMRegister reg, ZMMRegister vreg,
   emit(p2);
 }
 
-void Assembler::emit_operand(int code, const Operand &adr, int sl, int tl) {
+void Assembler::emit_operand(int code, const Operand &adr, int sl, int ts) {
   DCHECK(is_uint3(code));
   unsigned length = adr.len_;
   DCHECK(length > 0);
@@ -4377,7 +4377,7 @@ void Assembler::emit_operand(int code, const Operand &adr, int sl, int tl) {
     modrm |= code << 3;
 
     uint8_t mod = modrm >> 6;
-    if (tl > 0 && (mod == 1 || mod == 2)) {
+    if (ts > 0 && (mod == 1 || mod == 2)) {
       // Encode displacement with disp8*N encoding.
       if (mod == 1) {
         length -= 1;
@@ -4386,9 +4386,9 @@ void Assembler::emit_operand(int code, const Operand &adr, int sl, int tl) {
         length -= 4;
         disp = *bit_cast<const int32_t *>(&adr.buf_[length]);
       }
-      if (disp % tl == 0 && is_int8(disp / tl)) {
+      if (disp % ts == 0 && is_int8(disp / ts)) {
         // Use disp8*N compressed encoding.
-        disp = disp / tl;
+        disp = disp / ts;
         disp8 = true;
         modrm = (modrm & 0x3F) | 0x40;
       } else {
@@ -4719,8 +4719,49 @@ void Assembler::emit_sse_operand(ZMMRegister dst, ZMMRegister src) {
 }
 
 void Assembler::emit_sse_operand(ZMMRegister reg, const Operand &adr,
-                                 int sl, int tl) {
-  emit_operand(reg.low_bits(), adr, sl, tl);
+                                 int flags) {
+  // Get register size.
+  int regsize;
+  switch (reg.size()) {
+    case ZMMRegister::VectorLength128: regsize = 16; break;
+    case ZMMRegister::VectorLength256: regsize = 32; break;
+    case ZMMRegister::VectorLength512: regsize = 64; break;
+    default: regsize = 0;
+  }
+
+  // Use broadcast type for broadcasts.
+  int ts = regsize;
+  if (adr.load() == broadcast) {
+    if (flags & EVEX_BT4) {
+      ts = 4;
+    } else if (flags & EVEX_BT8) {
+      ts = 8;
+    }
+  } else {
+    if (flags & EVEX_DT1) {
+      ts = 1;
+    } else if (flags & EVEX_DT2) {
+      ts = 2;
+    } else if (flags & EVEX_DT2) {
+      ts = 2;
+    } else if (flags & EVEX_DT4) {
+      ts = 4;
+    } else if (flags & EVEX_DT8) {
+      ts = 8;
+    } else if (flags & EVEX_DT16) {
+      ts = 16;
+    } else if (flags & EVEX_DT32) {
+      ts = 32;
+    } else if (flags & EVEX_DT64) {
+      ts = 64;
+    }
+  }
+
+  // Suffix length is one if there is an immediate byte.
+  int sl = (flags & EVEX_IMM) ? 1 : 0;
+
+  // Emit operand for EVEX instruction.
+  emit_operand(reg.low_bits(), adr, sl, ts);
 }
 
 void Assembler::emit_sse_operand(ZMMRegister dst, Register src) {
@@ -5029,19 +5070,6 @@ void Assembler::kinstr(byte op, Register dst, OpmaskRegister k1,
   emit_sse_operand(idst, ik1);
 }
 
-static int tuple_size(ZMMRegister::SizeCode size) {
-  switch (size) {
-    case ZMMRegister::VectorLength128: return 16;
-    case ZMMRegister::VectorLength256: return 32;
-    case ZMMRegister::VectorLength512: return 64;
-    default: return 0;
-  }
-}
-
-static int tuple_size(ZMMRegister reg) {
-  return tuple_size(reg.size());
-}
-
 void Assembler::zinstr(byte op, ZMMRegister dst, ZMMRegister src,
                        int8_t imm8, Mask mask, int flags) {
   EnsureSpace ensure_space(this);
@@ -5056,7 +5084,7 @@ void Assembler::zinstr(byte op, ZMMRegister dst, const Operand &src,
   EnsureSpace ensure_space(this);
   emit_evex_prefix(dst, zmm0, src, mask, flags);
   emit(op);
-  emit_sse_operand(dst, src, (flags & EVEX_IMM) ? 1 : 0, tuple_size(dst));
+  emit_sse_operand(dst, src, flags);
   if (flags & EVEX_IMM) emit(imm8);
 }
 
@@ -5065,7 +5093,7 @@ void Assembler::zinstr(byte op, const Operand &dst, ZMMRegister src,
   EnsureSpace ensure_space(this);
   emit_evex_prefix(src, zmm0, dst, mask, flags);
   emit(op);
-  emit_sse_operand(src, dst, (flags & EVEX_IMM) ? 1 : 0, tuple_size(src));
+  emit_sse_operand(src, dst, flags);
   if (flags & EVEX_IMM) emit(imm8);
 }
 
@@ -5085,7 +5113,7 @@ void Assembler::zinstr(byte op, ZMMRegister dst, ZMMRegister src1,
   EnsureSpace ensure_space(this);
   emit_evex_prefix(dst, src1, src2, mask, flags);
   emit(op);
-  emit_sse_operand(dst, src2, (flags & EVEX_IMM) ? 1 : 0, tuple_size(dst));
+  emit_sse_operand(dst, src2, flags);
   if (flags & EVEX_IMM) emit(imm8);
 }
 
@@ -5095,7 +5123,7 @@ void Assembler::zinstr(byte op, const Operand &dst, ZMMRegister src1,
   EnsureSpace ensure_space(this);
   emit_evex_prefix(src2, src1, dst, mask, flags);
   emit(op);
-  emit_sse_operand(src2, dst, (flags & EVEX_IMM) ? 1 : 0, tuple_size(src2));
+  emit_sse_operand(src2, dst, flags);
   if (flags & EVEX_IMM) emit(imm8);
 }
 
@@ -5136,7 +5164,7 @@ void Assembler::zinstr(byte op, Register dst, const Operand &src,
   ZMMRegister idst = ZMMRegister::from_code(dst.code());
   emit_evex_prefix(idst, zmm0, src, mask, flags);
   emit(op);
-  emit_sse_operand(idst, src, (flags & EVEX_IMM) ? 1 : 0, 8);
+  emit_sse_operand(idst, src, flags);
   if (flags & EVEX_IMM) emit(imm8);
 }
 
@@ -5158,7 +5186,7 @@ void Assembler::zinstr(byte op, OpmaskRegister k, ZMMRegister src1,
   ZMMRegister ik = ZMMRegister::from_code(k.code());
   emit_evex_prefix(ik, src1, src2, mask, flags);
   emit(op);
-  emit_sse_operand(ik, src2, (flags & EVEX_IMM) ? 1 : 0, tuple_size(src1));
+  emit_sse_operand(ik, src2, flags);
   if (flags & EVEX_IMM) emit(imm8);
 }
 
