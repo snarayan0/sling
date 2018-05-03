@@ -943,16 +943,27 @@ void ExpressionGenerator::GenerateYMMFltOp(
 void ExpressionGenerator::GenerateZMMFltOp(
     Express::Op *instr,
     OpZMMRegReg fltopreg, OpZMMRegReg dblopreg,
+    OpZMMRegRegR fltopregr, OpZMMRegRegR dblopregr,
     OpZMMRegMem fltopmem, OpZMMRegMem dblopmem,
     MacroAssembler *masm, int argnum) {
   if (instr->dst != -1 && instr->src != -1) {
     // OP reg,reg
     switch (type_) {
       case DT_FLOAT:
-        (masm->*fltopreg)(zmm(instr->dst), zmm(instr->src), nomask);
+        if (fltopreg != nullptr) {
+          (masm->*fltopreg)(zmm(instr->dst), zmm(instr->src), nomask);
+        } else {
+          (masm->*fltopregr)(zmm(instr->dst), zmm(instr->src), nomask,
+                             kRoundDown);
+        }
         break;
       case DT_DOUBLE:
-        (masm->*dblopreg)(zmm(instr->dst), zmm(instr->src), nomask);
+        if (dblopreg != nullptr) {
+          (masm->*dblopreg)(zmm(instr->dst), zmm(instr->src), nomask);
+        } else {
+          (masm->*dblopregr)(zmm(instr->dst), zmm(instr->src), nomask,
+                             kRoundDown);
+        }
         break;
       default: UNSUPPORTED;
     }
@@ -1010,18 +1021,29 @@ void ExpressionGenerator::GenerateZMMFltOp(
 void ExpressionGenerator::GenerateZMMFltOp(
     Express::Op *instr,
     OpZMMRegRegReg fltopreg, OpZMMRegRegReg dblopreg,
+    OpZMMRegRegRegR fltopregr, OpZMMRegRegRegR dblopregr,
     OpZMMRegRegMem fltopmem, OpZMMRegRegMem dblopmem,
     MacroAssembler *masm, int argnum) {
   if (instr->dst != -1 && instr->src != -1 && instr->src2 != -1) {
     // OP reg,reg,reg
     switch (type_) {
       case DT_FLOAT:
-        (masm->*fltopreg)(zmm(instr->dst), zmm(instr->src), zmm(instr->src2),
-                          nomask);
+        if (fltopreg != nullptr) {
+          (masm->*fltopreg)(zmm(instr->dst), zmm(instr->src), zmm(instr->src2),
+                            nomask);
+        } else {
+          (masm->*fltopregr)(zmm(instr->dst), zmm(instr->src), zmm(instr->src2),
+                             nomask, kRoundDown);
+        }
         break;
       case DT_DOUBLE:
-        (masm->*dblopreg)(zmm(instr->dst), zmm(instr->src), zmm(instr->src2),
-                          nomask);
+        if (dblopreg != nullptr) {
+          (masm->*dblopreg)(zmm(instr->dst), zmm(instr->src), zmm(instr->src2),
+                            nomask);
+        } else {
+          (masm->*dblopregr)(zmm(instr->dst), zmm(instr->src), zmm(instr->src2),
+                            nomask, kRoundDown);
+        }
         break;
       default: UNSUPPORTED;
     }

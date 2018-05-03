@@ -32,6 +32,7 @@ class ExpressionGenerator {
   typedef jit::Register Register;
   typedef jit::Immediate Immediate;
   typedef jit::Mask Mask;
+  typedef jit::RoundingMode RoundingMode;
   typedef jit::XMMRegister XMMRegister;
   typedef jit::YMMRegister YMMRegister;
   typedef jit::ZMMRegister ZMMRegister;
@@ -177,6 +178,10 @@ class ExpressionGenerator {
   typedef void (Assembler::*OpZMMRegReg)(ZMMRegister,
                                          ZMMRegister,
                                          Mask);
+  typedef void (Assembler::*OpZMMRegRegR)(ZMMRegister,
+                                          ZMMRegister,
+                                          Mask,
+                                          RoundingMode);
   typedef void (Assembler::*OpZMMRegMem)(ZMMRegister,
                                          const Operand &,
                                          Mask);
@@ -192,6 +197,11 @@ class ExpressionGenerator {
                                             ZMMRegister,
                                             ZMMRegister,
                                             Mask);
+  typedef void (Assembler::*OpZMMRegRegRegR)(ZMMRegister,
+                                             ZMMRegister,
+                                             ZMMRegister,
+                                             Mask,
+                                             RoundingMode);
   typedef void (Assembler::*OpZMMRegRegRegImm)(ZMMRegister,
                                                ZMMRegister,
                                                ZMMRegister,
@@ -350,6 +360,7 @@ class ExpressionGenerator {
   void GenerateZMMFltOp(
       Express::Op *instr,
       OpZMMRegReg fltopreg, OpZMMRegReg dblopreg,
+      OpZMMRegRegR fltopregr, OpZMMRegRegR dblopregr,
       OpZMMRegMem fltopmem, OpZMMRegMem dblopmem,
       MacroAssembler *masm, int argnum = 0);
 
@@ -365,6 +376,7 @@ class ExpressionGenerator {
   void GenerateZMMFltOp(
       Express::Op *instr,
       OpZMMRegRegReg fltopreg, OpZMMRegRegReg dblopreg,
+      OpZMMRegRegRegR fltopregr, OpZMMRegRegRegR dblopregr,
       OpZMMRegRegMem fltopmem, OpZMMRegRegMem dblopmem,
       MacroAssembler *masm, int argnum = 1);
 

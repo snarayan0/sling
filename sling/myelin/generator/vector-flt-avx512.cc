@@ -75,24 +75,28 @@ class VectorFltAVX512Generator : public ExpressionGenerator {
         break;
       case Express::ADD:
         GenerateZMMFltOp(instr,
+            nullptr, nullptr,
             &Assembler::vaddps, &Assembler::vaddpd,
             &Assembler::vaddps, &Assembler::vaddpd,
             masm);
         break;
       case Express::SUB:
         GenerateZMMFltOp(instr,
+            nullptr, nullptr,
             &Assembler::vsubps, &Assembler::vsubpd,
             &Assembler::vsubps, &Assembler::vsubpd,
             masm);
         break;
       case Express::MUL:
         GenerateZMMFltOp(instr,
+            nullptr, nullptr,
             &Assembler::vmulps, &Assembler::vmulpd,
             &Assembler::vmulps, &Assembler::vmulpd,
             masm);
         break;
       case Express::DIV:
         GenerateZMMFltOp(instr,
+            nullptr, nullptr,
             &Assembler::vdivps, &Assembler::vdivpd,
             &Assembler::vdivps, &Assembler::vdivpd,
             masm);
@@ -100,53 +104,62 @@ class VectorFltAVX512Generator : public ExpressionGenerator {
       case Express::MIN:
         GenerateZMMFltOp(instr,
             &Assembler::vminps, &Assembler::vminpd,
+            nullptr, nullptr,
             &Assembler::vminps, &Assembler::vminpd,
             masm);
         break;
       case Express::MAX:
         GenerateZMMFltOp(instr,
             &Assembler::vmaxps, &Assembler::vmaxpd,
+            nullptr, nullptr,
             &Assembler::vmaxps, &Assembler::vmaxpd,
             masm);
         break;
       case Express::SQRT:
         GenerateZMMFltOp(instr,
+            nullptr, nullptr,
             &Assembler::vsqrtps, &Assembler::vsqrtpd,
             &Assembler::vsqrtps, &Assembler::vsqrtpd,
             masm);
         break;
       case Express::MULADD132:
         GenerateZMMFltOp(instr,
+            nullptr, nullptr,
             &Assembler::vfmadd132ps, &Assembler::vfmadd132pd,
             &Assembler::vfmadd132ps, &Assembler::vfmadd132pd,
             masm, 2);
         break;
       case Express::MULADD213:
         GenerateZMMFltOp(instr,
+            nullptr, nullptr,
             &Assembler::vfmadd213ps, &Assembler::vfmadd213pd,
             &Assembler::vfmadd213ps, &Assembler::vfmadd213pd,
             masm, 2);
         break;
       case Express::MULADD231:
         GenerateZMMFltOp(instr,
+            nullptr, nullptr,
             &Assembler::vfmadd231ps, &Assembler::vfmadd231pd,
             &Assembler::vfmadd231ps, &Assembler::vfmadd231pd,
             masm, 2);
         break;
       case Express::MULSUB132:
         GenerateZMMFltOp(instr,
+            nullptr, nullptr,
             &Assembler::vfmsub132ps, &Assembler::vfmsub132pd,
             &Assembler::vfmsub132ps, &Assembler::vfmsub132pd,
             masm, 2);
         break;
       case Express::MULSUB213:
         GenerateZMMFltOp(instr,
+            nullptr, nullptr,
             &Assembler::vfmsub213ps, &Assembler::vfmsub213pd,
             &Assembler::vfmsub213ps, &Assembler::vfmsub213pd,
             masm, 2);
         break;
       case Express::MULSUB231:
         GenerateZMMFltOp(instr,
+            nullptr, nullptr,
             &Assembler::vfmsub231ps, &Assembler::vfmsub231pd,
             &Assembler::vfmsub231ps, &Assembler::vfmsub231pd,
             masm, 2);
@@ -166,18 +179,21 @@ class VectorFltAVX512Generator : public ExpressionGenerator {
       case Express::AND:
         GenerateZMMFltOp(instr,
             &Assembler::vandps, &Assembler::vandpd,
+            nullptr, nullptr,
             &Assembler::vandps, &Assembler::vandpd,
             masm);
         break;
       case Express::OR:
         GenerateZMMFltOp(instr,
             &Assembler::vorps, &Assembler::vorpd,
+            nullptr, nullptr,
             &Assembler::vorps, &Assembler::vorpd,
             masm);
         break;
       case Express::ANDNOT:
         GenerateZMMFltOp(instr,
             &Assembler::vandnps, &Assembler::vandnpd,
+            nullptr, nullptr,
             &Assembler::vandnps, &Assembler::vandnpd,
             masm);
         break;
@@ -196,18 +212,21 @@ class VectorFltAVX512Generator : public ExpressionGenerator {
       case Express::CVTFLTINT:
         GenerateZMMFltOp(instr,
             &Assembler::vcvttps2dq, &Assembler::vcvttpd2dq,
+            nullptr, nullptr,
             &Assembler::vcvttps2dq, &Assembler::vcvttpd2dq,
             masm);
         break;
       case Express::CVTINTFLT:
         GenerateZMMFltOp(instr,
-            &Assembler::vcvtdq2ps, &Assembler::vcvtdq2pd,
+            nullptr, &Assembler::vcvtdq2pd,
+            &Assembler::vcvtdq2ps, nullptr,
             &Assembler::vcvtdq2ps, &Assembler::vcvtdq2pd,
             masm);
         break;
       case Express::SUBINT:
         GenerateZMMFltOp(instr,
             &Assembler::vpsubd, &Assembler::vpsubq,
+            nullptr, nullptr,
             &Assembler::vpsubd, &Assembler::vpsubq,
             masm);
         break;
@@ -262,8 +281,8 @@ class VectorFltAVX512Generator : public ExpressionGenerator {
 
   // Generate compare.
   void GenerateCompare(Express::Op *instr, MacroAssembler *masm, int8 code) {
-    // Allocate mask register if not already done.
-    if (!mask_.is_valid()) mask_ = masm->kk().alloc();
+    // Allocate mask register.
+    OpmaskRegister mask = masm->kk().alloc();
 
     // Allocate mask.
     auto *ones = masm->GetConstant<int32>(-1, 16);
@@ -272,20 +291,20 @@ class VectorFltAVX512Generator : public ExpressionGenerator {
     if (instr->src != -1 && instr->src2 != -1) {
       switch (type_) {
         case DT_FLOAT:
-          __ vcmpps(mask_, zmm(instr->src), zmm(instr->src2), code);
+          __ vcmpps(mask, zmm(instr->src), zmm(instr->src2), code);
           break;
         case DT_DOUBLE:
-          __ vcmppd(mask_, zmm(instr->src), zmm(instr->src2), code);
+          __ vcmppd(mask, zmm(instr->src), zmm(instr->src2), code);
           break;
         default: UNSUPPORTED;
       }
     } else if (instr->src != -1 && instr->src2 == -1) {
       switch (type_) {
         case DT_FLOAT:
-          __ vcmpps(mask_, zmm(instr->src), addr(instr->args[1]), code);
+          __ vcmpps(mask, zmm(instr->src), addr(instr->args[1]), code);
           break;
         case DT_DOUBLE:
-          __ vcmppd(mask_, zmm(instr->src), addr(instr->args[1]), code);
+          __ vcmppd(mask, zmm(instr->src), addr(instr->args[1]), code);
           break;
         default: UNSUPPORTED;
       }
@@ -295,14 +314,12 @@ class VectorFltAVX512Generator : public ExpressionGenerator {
 
     if (instr->dst != -1) {
       // Put mask into destination register.
-      __ vmovaps(zmm(instr->dst), ones->address(), Mask(mask_, zeroing));
+      __ vmovaps(zmm(instr->dst), ones->address(), Mask(mask, zeroing));
     } else {
       UNSUPPORTED;
     }
+    masm->kk().release(mask);
   }
-
-  // Mask register for comparison.
-  OpmaskRegister mask_ = no_opmask_reg;
 };
 
 ExpressionGenerator *CreateVectorFltAVX512Generator() {

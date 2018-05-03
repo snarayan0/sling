@@ -312,10 +312,10 @@ for method in methods:
     dual = method.args[reg_mem_arg].split("/")
     method.args[reg_mem_arg] = dual[0]
     mem_method.args[reg_mem_arg] = dual[1]
-    if bcst:
-      bcst = False
+    if method.bcst:
+      method.bcst = False
       mem_method.bcst = True
-    elif sae:
+    elif method.sae:
       mem_method.sae = True
     if not find_method(mem_method.name, mem_method.args):
       methods.append(mem_method)
