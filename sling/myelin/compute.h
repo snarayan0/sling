@@ -428,8 +428,8 @@ class Tensor {
   // are not stored on the host.
   size_t offset() const { return offset_; }
 
-  // Offset in device data instance block. Return -1 for tensors
-  // that are not not stored in the instance block on the device.
+  // Offset in device data instance block. Return -1 for tensors that are not
+  // stored in the instance block on the device.
   size_t device_offset() const { return device_offset_; }
 
   // Number bytes allocated for tensor in instance. This takes references into
@@ -545,7 +545,10 @@ class Tensor {
   Step *producer() const { return producer_; }
 
   // List of steps that uses tensor.
-  const std::vector<Step *> consumers() const { return consumers_; }
+  const std::vector<Step *> &consumers() const { return consumers_; }
+
+  // Return the number of usages of tensor.
+  int usages() const { return consumers_.size(); }
 
   // Cell that tensor belongs to.
   Cell *cell() const { return cell_; }
