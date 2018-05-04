@@ -953,16 +953,14 @@ void ExpressionGenerator::GenerateZMMFltOp(
         if (fltopreg != nullptr) {
           (masm->*fltopreg)(zmm(instr->dst), zmm(instr->src), nomask);
         } else {
-          (masm->*fltopregr)(zmm(instr->dst), zmm(instr->src), nomask,
-                             kRoundDown);
+          (masm->*fltopregr)(zmm(instr->dst), zmm(instr->src), nomask, noround);
         }
         break;
       case DT_DOUBLE:
         if (dblopreg != nullptr) {
           (masm->*dblopreg)(zmm(instr->dst), zmm(instr->src), nomask);
         } else {
-          (masm->*dblopregr)(zmm(instr->dst), zmm(instr->src), nomask,
-                             kRoundDown);
+          (masm->*dblopregr)(zmm(instr->dst), zmm(instr->src), nomask, noround);
         }
         break;
       default: UNSUPPORTED;
@@ -1033,7 +1031,7 @@ void ExpressionGenerator::GenerateZMMFltOp(
                             nomask);
         } else {
           (masm->*fltopregr)(zmm(instr->dst), zmm(instr->src), zmm(instr->src2),
-                             nomask, kRoundDown);
+                             nomask, noround);
         }
         break;
       case DT_DOUBLE:
@@ -1042,7 +1040,7 @@ void ExpressionGenerator::GenerateZMMFltOp(
                             nomask);
         } else {
           (masm->*dblopregr)(zmm(instr->dst), zmm(instr->src), zmm(instr->src2),
-                            nomask, kRoundDown);
+                            nomask, noround);
         }
         break;
       default: UNSUPPORTED;

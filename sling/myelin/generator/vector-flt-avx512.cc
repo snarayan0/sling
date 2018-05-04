@@ -207,7 +207,7 @@ class VectorFltAVX512Generator : public ExpressionGenerator {
         GenerateZMMFltOp(instr,
             &Assembler::vrndscaleps, &Assembler::vrndscalepd,
             &Assembler::vrndscaleps, &Assembler::vrndscalepd,
-            kRoundDown, masm);
+            round_down, masm);
         break;
       case Express::CVTFLTINT:
         GenerateZMMFltOp(instr,

@@ -246,10 +246,10 @@ class Assembler : public CodeGenerator {
     EVEX_ER     = (1 << 17),  // static-rounding
     EVEX_SAE    = (1 << 18),  // suppress all exceptions
 
-    EVEX_IMM    = (1 << 19),  // immediate operand
+    EVEX_R0     = (1 << 19),   // rounding mode bit 0
+    EVEX_R1     = (1 << 20),   // rounding mode bit 1
 
-    EVEX_R0     = (1 << 20),   // rounding mode bit 0
-    EVEX_R1     = (1 << 21),   // rounding mode bit 1
+    EVEX_IMM    = (1 << 21),  // immediate operand
 
     EVEX_DT1    = (1 << 22),   // 1-byte data type
     EVEX_DT2    = (1 << 23),   // 2-byte data type
@@ -3535,7 +3535,9 @@ class Assembler : public CodeGenerator {
               SIMDPrefix pp, LeadingOpcode m, VexW w);
 
   // AVX-512 instruction encoding.
-  static int evex_round(RoundingMode er) { return er * EVEX_R0; }
+  static int evex_round(RoundingMode er) {
+    return er == noround ? 0 : (er * EVEX_R0) | EVEX_ER;
+  }
 
   void zinstr(byte op, ZMMRegister dst, ZMMRegister src,
               int8_t imm8, Mask mask, int flags);

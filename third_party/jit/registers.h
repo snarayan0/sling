@@ -477,10 +477,11 @@ inline Condition CommuteCondition(Condition cc) {
 
 // Rounding mode.
 enum RoundingMode {
-  kRoundToNearest = 0x0,
-  kRoundDown = 0x1,
-  kRoundUp = 0x2,
-  kRoundToZero = 0x3
+  noround       = -1,
+  round_nearest = 0x0,
+  round_down    = 0x1,
+  round_up      = 0x2,
+  round_to_zero = 0x3
 };
 
 }  // namespace jit

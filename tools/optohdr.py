@@ -315,8 +315,7 @@ for method in methods:
     if method.bcst:
       method.bcst = False
       mem_method.bcst = True
-    elif method.sae:
-      mem_method.sae = True
+    mem_method.er = False
     if not find_method(mem_method.name, mem_method.args):
       methods.append(mem_method)
 
@@ -350,8 +349,7 @@ for method in sorted(methods, key=lambda x: x.name):
   if method.bcst:
     method.add_flag("EVEX_BCST")
   elif method.er:
-    argsigs.append("RoundingMode er = kRoundToNearest")
-    method.add_flag("EVEX_ER")
+    argsigs.append("RoundingMode er = noround")
     method.add_flag("evex_round(er)")
   elif method.sae:
     method.add_flag("EVEX_SAE")

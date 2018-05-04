@@ -4261,7 +4261,7 @@ void Assembler::emit_evex_prefix(ZMMRegister reg, ZMMRegister vreg,
   if (flags & EVEX_PF2) p1 |= 0x03;
 
   // Operation size (L' and L) and width (W).
-  if (!(flags & EVEX_LIG)) p2 |= reg.size_bits() << 5;
+  if (!(flags & EVEX_LIG) && !(flags & EVEX_ER)) p2 |= reg.size_bits() << 5;
   if (flags & EVEX_W1) p1 |= 0x80;
 
   // Register specifiers.
@@ -4309,7 +4309,7 @@ void Assembler::emit_evex_prefix(ZMMRegister reg, ZMMRegister vreg,
   if (flags & EVEX_PF2) p1 |= 0x03;
 
   // Operation size (L' and L) and width (W).
-  if (!(flags & EVEX_LIG)) p2 |= reg.size_bits() << 5;
+  if (!(flags & EVEX_LIG) && !(flags & EVEX_ER)) p2 |= reg.size_bits() << 5;
   if (flags & EVEX_W1) p1 |= 0x80;
 
   // Register specifiers.
