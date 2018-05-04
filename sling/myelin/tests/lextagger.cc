@@ -42,6 +42,7 @@ DEFINE_bool(dump, false, "Dump flow");
 DEFINE_bool(dump_cell, false, "Dump flow");
 DEFINE_bool(profile, false, "Profile tagger");
 DEFINE_int32(epochs, 1000000, "Number of training epochs");
+DEFINE_int32(lstm, 128, "LSTM size");
 DEFINE_int32(report, 25000, "Report status after every n sentence");
 DEFINE_double(alpha, 1.0, "Learning rate");
 DEFINE_double(minalpha, 0.01, "Minimum learning rate");
@@ -65,6 +66,7 @@ DEFINE_int32(lexthres, 0, "Lexicon threshold");
 DEFINE_string(flow, "", "Flow file for saving trained POS tagger");
 DEFINE_bool(adam, false, "Use Adam optimizer");
 DEFINE_bool(avx512, false, "Enable AVX-512 code generation");
+DEFINE_bool(disable_avx512, false, "Disable AVX-512 code generation");
 
 using namespace sling;
 using namespace sling::myelin;
@@ -194,9 +196,9 @@ class Tagger {
       Vocabulary::HashMapIterator vocab(words);
 
       // Build document input encoder.
-      lstm = encoder_.Build(flow, library_, spec_, &vocab, 128, true);
+      lstm = encoder_.Build(flow, library_, spec_, &vocab, FLAGS_lstm, true);
     } else {
-      lstm = encoder_.Build(flow, library_, spec_, nullptr, 128, false);
+      lstm = encoder_.Build(flow, library_, spec_, nullptr, FLAGS_lstm, false);
     }
 
     // Build flow for POS tagger.
@@ -341,9 +343,10 @@ class Tagger {
       int tps = (num_tokens_ - prev_tokens_) / secs;
       int64 flops = flops_counter - prev_flops_;
       float gflops = flops / secs / 1e9;
+      int contention = optimizer_time_ / secs * 100;
 
-      LOG(INFO) << "epochs " << epoch_ << ", "
-                << "alpha " << alpha_ << ", "
+      LOG(INFO) << epoch_ << " epochs, "
+                << contention << "% contention, "
                 << num_workers_ << " workers, "
                 << tps << " tokens/s, "
                 << gflops << " GFLOPS, "
@@ -352,6 +355,7 @@ class Tagger {
 
       prev_tokens_ = num_tokens_;
       prev_flops_ = flops_counter;
+      optimizer_time_ = 0.0;
       start_ = WallTime();
 
       // Check is we are done.
@@ -366,7 +370,9 @@ class Tagger {
   void Worker(int index) {
     // Ramp-up peiod.
     sleep(std::min(index * FLAGS_rampup, FLAGS_maxrampup));
+    update_mu_.Lock();
     num_workers_++;
+    update_mu_.Unlock();
 
     // Lexical encoder learner.
     LexicalEncoderLearner encoder(encoder_);
@@ -429,14 +435,18 @@ class Tagger {
       // Apply gradients to model.
       if (iteration % FLAGS_batch == 0) {
         if (FLAGS_lock) update_mu_.Lock();
+        Clock timer;
+        timer.start();
         if (!FLAGS_adam) {
           auto *sgd = static_cast<GradientDescentOptimizer *>(optimizer_);
           sgd->set_alpha(alpha_);
         }
         optimizer_->Apply(gradients);
+        timer.stop();
         loss_sum_ += local_loss_sum;
         loss_count_ += local_loss_count;
         num_tokens_ += local_tokens;
+        optimizer_time_ += timer.secs();
         if (FLAGS_lock) update_mu_.Unlock();
 
         gtagger.Clear();
@@ -568,6 +578,7 @@ class Tagger {
   int loss_count_ = 0;
   float alpha_ = FLAGS_alpha;
   double start_;
+  double optimizer_time_ = 0.0;
   int num_workers_ = 0;
   int64 prev_flops_ = 0;
 
@@ -581,6 +592,7 @@ int main(int argc, char *argv[]) {
   InitProgram(&argc, &argv);
 
   if (FLAGS_avx512) jit::CPU::Enable(jit::AVX512F);
+  if (FLAGS_disable_avx512) jit::CPU::Disable(jit::AVX512F);
 
   Tagger tagger;
   tagger.ReadCorpora();
