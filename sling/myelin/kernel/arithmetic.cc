@@ -1093,7 +1093,7 @@ class Softmax : public Kernel {
       }
     }
 
-    const void *data(Express::Var *var) {
+    const void *data(Express::Var *var) override {
       UNSUPPORTED;
       return nullptr;
     }

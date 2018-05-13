@@ -19,7 +19,9 @@
 #include "sling/frame/store.h"
 #include "sling/myelin/builder.h"
 #include "sling/myelin/compute.h"
+#ifdef __linux__
 #include "sling/myelin/elf-linker.h"
+#endif
 #include "sling/myelin/flow.h"
 #include "sling/myelin/gradient.h"
 #include "sling/myelin/graph.h"
@@ -54,7 +56,6 @@ DEFINE_double(lambda, 0.0, "Regularization parameter");
 DEFINE_double(decay, 0.5, "Learning rate decay rate");
 DEFINE_double(clip, 1.0, "Gradient norm clipping");
 DEFINE_int32(seed, 0, "Random number generator seed");
-DEFINE_int32(alpha_update, 50000, "Number of epochs between alpha updates");
 DEFINE_int32(batch, 64, "Number of epochs between gradient updates");
 DEFINE_bool(shuffle, true, "Shuffle training corpus");
 DEFINE_bool(heldout, true, "Test tagger on heldout data");
@@ -65,6 +66,7 @@ DEFINE_bool(lock, true, "Locked gradient updates");
 DEFINE_int32(lexthres, 0, "Lexicon threshold");
 DEFINE_string(flow, "", "Flow file for saving trained POS tagger");
 DEFINE_bool(adam, false, "Use Adam optimizer");
+DEFINE_bool(optacc, false, "Decay learning rate based on accuracy");
 DEFINE_bool(avx512, false, "Enable AVX-512 code generation");
 DEFINE_bool(disable_avx512, false, "Disable AVX-512 code generation");
 
@@ -123,7 +125,9 @@ class Tagger {
     // Set up kernel library.
     RegisterTensorflowLibrary(&library_);
 
+#ifdef __linux__
     net_.set_linker(&linker_);
+#endif
     if (FLAGS_profile) {
       net_.options().profiling = true;
       net_.options().global_profiler = true;
@@ -223,18 +227,23 @@ class Tagger {
       if (FLAGS_adam) {
         LOG(INFO) << "Using Adam optimizer";
         AdamOptimizer *adam = new AdamOptimizer();
-        adam->set_alpha(FLAGS_eta);
+        adam->set_learning_rate(FLAGS_eta);
+        adam->set_decay(FLAGS_decay);
         adam->set_beta1(FLAGS_beta1);
         adam->set_beta2(FLAGS_beta2);
         adam->set_clipping_threshold(FLAGS_clip);
         adam->set_epsilon(FLAGS_epsilon);
         optimizer_ = adam;
+        alpha_ = FLAGS_eta;
       } else {
         LOG(INFO) << "Using SGD optimizer";
         GradientDescentOptimizer *sgd = new GradientDescentOptimizer();
+        sgd->set_learning_rate(FLAGS_alpha);
+        sgd->set_decay(FLAGS_decay);
         sgd->set_lambda(FLAGS_lambda);
         sgd->set_clipping_threshold(FLAGS_clip);
         optimizer_ = sgd;
+        alpha_ = FLAGS_alpha;
       }
       optimizer_->Build(flow);
 
@@ -281,9 +290,11 @@ class Tagger {
       for (Cell *cell : net_.cells()) std::cout << cell->ToString();
     }
 
+#ifdef __linux__
     // Write object file with generated code.
     linker_.Link();
     linker_.Write("/tmp/postagger.o");
+#endif
 
     // Initialize model.
     encoder_.Initialize(net_);
@@ -333,16 +344,16 @@ class Tagger {
       }
 
       // Evaluate model.
-      float avg_loss = loss_sum_ / loss_count_;
+      float loss = loss_sum_ / loss_count_;
       loss_sum_ = 0.0;
       loss_count_ = 0;
-      float acc = FLAGS_heldout ? Evaluate(&dev_) : exp(-avg_loss) * 100.0;
+      float acc = FLAGS_heldout ? Evaluate(&dev_) : exp(-loss) * 100.0;
 
       double end = WallTime();
       float secs = end - start_;
       int tps = (num_tokens_ - prev_tokens_) / secs;
       int64 flops = flops_counter - prev_flops_;
-      float gflops = flops / secs / 1e9;
+      int gflops = flops / secs / 1e9;
       int contention = optimizer_time_ / secs * 100;
 
       LOG(INFO) << epoch_ << " epochs, "
@@ -350,13 +361,26 @@ class Tagger {
                 << num_workers_ << " workers, "
                 << tps << " tokens/s, "
                 << gflops << " GFLOPS, "
-                << "loss=" << avg_loss
+                << "loss=" << loss
                 << ", accuracy=" << acc;
 
       prev_tokens_ = num_tokens_;
       prev_flops_ = flops_counter;
       optimizer_time_ = 0.0;
       start_ = WallTime();
+
+      // Decay learning rate if loss increases or accuracy drops.
+      bool decay = false;
+      if (FLAGS_optacc) {
+        if (acc < prev_acc_ && prev_acc_ != 0.0) decay = true;
+      } else {
+        if (loss > prev_loss_ && prev_loss_ != 0.0) decay = true;
+      }
+      if (decay) {
+        alpha_ = optimizer_->DecayLearningRate();
+      }
+      prev_loss_ = loss;
+      prev_acc_ = acc;
 
       // Check is we are done.
       if (epoch_ >= FLAGS_epochs) break;
@@ -437,10 +461,6 @@ class Tagger {
         if (FLAGS_lock) update_mu_.Lock();
         Clock timer;
         timer.start();
-        if (!FLAGS_adam) {
-          auto *sgd = static_cast<GradientDescentOptimizer *>(optimizer_);
-          sgd->set_alpha(alpha_);
-        }
         optimizer_->Apply(gradients);
         timer.stop();
         loss_sum_ += local_loss_sum;
@@ -459,12 +479,6 @@ class Tagger {
       // Check if new evaluation should be triggered.
       std::unique_lock<std::mutex> lock(eval_mu_);
       if (epoch_ % FLAGS_report == 0) eval_model_.notify_one();
-
-      // Decay learning rate.
-      if (epoch_ % FLAGS_alpha_update == 0) {
-        alpha_ *= FLAGS_decay;
-        if (alpha_ < FLAGS_minalpha) alpha_ = FLAGS_minalpha;
-      }
 
       // Next epoch.
       if (epoch_ >= FLAGS_epochs) break;
@@ -558,7 +572,9 @@ class Tagger {
   Library library_;             // kernel library
   Flow flow_;                   // flow for tagger model
   Network net_;                 // neural net
+#ifdef __linux__
   ElfLinker linker_;            // linker for outputting generated code
+#endif
 
   // Document input encoder.
   LexicalEncoder encoder_;
@@ -576,6 +592,8 @@ class Tagger {
   int num_tokens_ = 0;
   float loss_sum_ = 0.0;
   int loss_count_ = 0;
+  float prev_loss_ = 0.0;
+  float prev_acc_ = 0.0;
   float alpha_ = FLAGS_alpha;
   double start_;
   double optimizer_time_ = 0.0;
