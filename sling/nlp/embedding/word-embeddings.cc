@@ -21,8 +21,8 @@
 #include "sling/file/recordio.h"
 #include "sling/file/textmap.h"
 #include "sling/frame/serialization.h"
-#include "sling/myelin/compute.h"
 #include "sling/myelin/builder.h"
+#include "sling/myelin/compute.h"
 #include "sling/myelin/flow.h"
 #include "sling/myelin/kernel/tensorflow.h"
 #include "sling/nlp/document/document.h"
@@ -258,7 +258,7 @@ class WordVocabularySampler {
   // Permutaion of words for sampling.
   std::vector<Element> permutation_;
 
-  // Threshold for sub-sampling words
+  // Threshold for sub-sampling words.
   float threshold_;
 
   // Entry for unknown words.
@@ -371,6 +371,8 @@ class WordEmbeddingsTrainer : public Process {
     myelin::RegisterTensorflowLibrary(&library);
     WordEmbeddingsFlow flow(vocabulary_size, embedding_dims_, window_);
     flow.Analyze(library);
+    string flowfile = task->Get("flow", "");
+    if (!flowfile.empty()) flow.Save(flowfile);
     myelin::Network model;
     model.options().flops_address = Perf::flopptr();
     CHECK(model.Compile(flow, library));
