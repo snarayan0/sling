@@ -1143,7 +1143,11 @@ class AVXFltDotProduct : public Kernel {
     __ LoadTensorAddress(bptr, b);
     __ xorq(idx, idx);
     for (int i = 0; i < adders; ++i) {
-      __ vxorps(sum[i].ymm(), sum[i].ymm(), sum[i].ymm());
+      if (avx512) {
+        __ vxorps(sum[i], sum[i], sum[i]);
+      } else {
+        __ vxorps(sum[i].ymm(), sum[i].ymm(), sum[i].ymm());
+      }
     }
 
     // Outer loop over elements.
