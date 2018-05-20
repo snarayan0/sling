@@ -51,6 +51,10 @@ class BiLSTM {
   // Initialize LSTMs.
   void Initialize(const Network &net);
 
+  // Cell accessors.
+  Cell *lr_cell() const { return lr_.cell; }
+  Cell *rl_cell() const { return rl_.cell; }
+
  private:
   // Network for LSTM cell.
   struct LSTM {
@@ -89,6 +93,9 @@ class BiLSTMInstance {
 
   // Compute left-to-right and right-to-left LSTM sequences for input.
   BiChannel Compute(Channel *input);
+
+  void set_lr_profile(myelin::ProfileSummary *s) { lr_.set_profile(s); }
+  void set_rl_profile(myelin::ProfileSummary *s) { rl_.set_profile(s); }
 
  private:
   const BiLSTM &bilstm_;     // bi-directional LSTM

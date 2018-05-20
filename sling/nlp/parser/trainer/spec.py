@@ -84,7 +84,9 @@ class Spec:
   ALL_DIGIT = 2
   DIGIT_CARDINALITY = 3
 
-  def __init__(self):
+  def __init__(self, small=False):
+    self.small = small
+
     # Lexicon generation settings.
     self.words_normalize_digits = True
     self.suffixes_normalize_digits = False
@@ -93,22 +95,41 @@ class Spec:
     # Action table percentile.
     self.actions_percentile = 99
 
-    # Network dimensionalities.
-    self.lstm_hidden_dim = 256
-    self.ff_hidden_dim = 128
+    if small:
+      # Network dimensionalities.
+      self.lstm_hidden_dim = 6
+      self.ff_hidden_dim = 12
 
-    # Fixed feature dimensionalities.
-    self.oov_features = True
-    self.words_dim = 32
-    self.suffixes_dim = 16
-    self.fallback_dim = 8  # dimensionality of each fallback feature
-    self.roles_dim = 16
+      # Fixed feature dimensionalities.
+      self.oov_features = False
+      self.words_dim = 4
+      self.suffixes_dim = 2 
+      self.fallback_dim = 2  # dimensionality of each fallback feature
+      self.roles_dim = 2
 
-    # History feature size.
-    self.history_limit = 4
+      # History feature size.
+      self.history_limit = 2
 
-    # Frame limit for other link features.
-    self.frame_limit = 5
+      # Frame limit for other link features.
+      self.frame_limit = 2
+
+    else:
+      # Network dimensionalities.
+      self.lstm_hidden_dim = 256
+      self.ff_hidden_dim = 128
+
+      # Fixed feature dimensionalities.
+      self.oov_features = True
+      self.words_dim = 32
+      self.suffixes_dim = 16
+      self.fallback_dim = 8  # dimensionality of each fallback feature
+      self.roles_dim = 16
+
+      # History feature size.
+      self.history_limit = 4
+
+      # Frame limit for other link features.
+      self.frame_limit = 5
 
     # Resources.
     self.commons = None
@@ -211,7 +232,7 @@ class Spec:
   # Specifies all fixed and link features.
   def _specify_features(self):
     # LSTM features.
-    self.add_lstm_fixed("words", self.words_dim, self.words.size())
+    self.add_lstm_fixed("word", self.words_dim, self.words.size())
     if self.oov_features:
       self.add_lstm_fixed(
           "suffix", self.suffixes_dim, self.suffix.size(), \
@@ -343,7 +364,7 @@ class Spec:
     for f in self.lstm_features:
       features = Feature()
       output.append(features)
-      if f.name == "words":
+      if f.name == "word":
         for token in document.tokens:
           features.add(self.words.index(token.text))
       elif f.name == "suffix":
@@ -496,41 +517,13 @@ class Spec:
     return output
 
 
-  # Writes resources as flow blobs.
-  def write_flow(self, flow):
-    lexicon = flow.blob("lexicon")
-    lexicon.type = "dict"
-    lexicon.add_attr("delimiter", 10)
-    lexicon.add_attr("oov", self.words.oov_index)
-    lexicon.add_attr("normalize_digits", self.words.normalize_digits)
-    lexicon.data = str(self.words) + "\n"
-
-    def read_file(filename):
-      fin = open(filename, "r")
-      data = fin.read()
-      fin.close()
-      return data
-
-    commons = flow.blob("commons")
-    commons.type = "frames"
-    commons.data = read_file(self.commons_path)
-
-    suffix = flow.blob("suffixes")
-    suffix.type = "affix"
-    suffix.data = str(self.write_suffix_table())
-
-    actions = flow.blob("actions")
-    actions.type = "frames"
-    actions.data = self.actions.encoded(self.commons)
-
-
   # Debugging methods.
   #
   # Returns feature strings for LSTM feature indices in 'indices'. All indices
   # are assumed to belong to a single feature whose spec is in 'feature_spec'.
   def lstm_feature_strings(self, feature_spec, indices):
     strings = []
-    if feature_spec.name == "words":
+    if feature_spec.name == "word":
       strings = [self.words.value(index) for index in indices]
     elif feature_spec.name == "suffix":
       strings = [self.suffix.value(index) for index in indices]

@@ -89,6 +89,9 @@ class LexicalFeatures {
   // Feature vector output.
   myelin::Tensor *feature_vector() const { return feature_vector_; }
 
+  // Myelin Cell.
+  myelin::Cell *cell() const { return features_; }
+
  private:
   string name_;                                // cell name
   Lexicon lexicon_;                            // lexicon for word vocabulary
@@ -133,6 +136,9 @@ class LexicalFeatureExtractor {
 
   // Data instance for feature extraction.
   myelin::Instance *data() { return &data_; }
+
+  // Set profile summary.
+  void set_profile(myelin::ProfileSummary *s) { data_.set_profile(s); }
 
  private:
   const LexicalFeatures &lex_;
@@ -199,6 +205,14 @@ class LexicalEncoder {
   // Save lexicon.
   void SaveLexicon(myelin::Flow *flow) const { lex_.SaveLexicon(flow); }
 
+  // Load lexicon.
+  void LoadLexicon(myelin::Flow *flow) { lex_.LoadLexicon(flow); }
+
+  // Cell accessors.
+  myelin::Cell *lr_cell() const { return bilstm_.lr_cell(); }
+  myelin::Cell *rl_cell() const { return bilstm_.rl_cell(); }
+  myelin::Cell *features_cell() const { return lex_.cell(); }
+
  private:
   // Lexical feature extractor with embeddings.
   LexicalFeatures lex_;
@@ -224,6 +238,11 @@ class LexicalEncoderInstance {
   // encoder. Returns the left-to-right and right-to-left channels for the
   // hidden state of the LSTMs.
   myelin::BiChannel Compute(const Document &document, int begin, int end);
+
+  // Set dedicated profile computation summaries for the various cells.
+  void set_profile(myelin::ProfileSummary *fv,
+                   myelin::ProfileSummary *lr,
+                   myelin::ProfileSummary *rl);
 
  private:
   const LexicalEncoder &encoder_;

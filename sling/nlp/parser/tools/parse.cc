@@ -238,6 +238,9 @@ int main(int argc, char *argv[]) {
 
   // Output profile report.
   if (FLAGS_profile) {
+    myelin::Profile features(&parser.profile()->features);
+    std::cout << features.ASCIIReport() << "\n";
+
     myelin::Profile lr(&parser.profile()->lr);
     std::cout << lr.ASCIIReport() << "\n";
 

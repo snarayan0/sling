@@ -75,8 +75,25 @@ cc_library(
     "//sling/myelin/kernel:dragnn",
     "//sling/myelin/kernel:tensorflow",
     "//sling/nlp/document",
-    "//sling/nlp/document:features",
-    "//sling/nlp/document:lexicon",
+    "//sling/nlp/document:lexical-encoder",
+  ],
+)
+
+cc_binary(
+  name = "lextest",
+  srcs = ["lextest.cc"],
+  deps = [
+    "//sling/base",
+    "//sling/file:posix",
+    "//sling/frame:serialization",
+    "//sling/frame:store",
+    "//sling/myelin:compute",
+    "//sling/myelin:flow",
+    "//sling/myelin:profile",
+    "//sling/myelin/kernel:dragnn",
+    "//sling/myelin/kernel:tensorflow",
+    "//sling/nlp/document",
+    "//sling/nlp/document:lexical-encoder",
   ],
 )
 
