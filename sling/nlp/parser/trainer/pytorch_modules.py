@@ -31,7 +31,7 @@ Param = nn.Parameter
 Var = torch.autograd.Variable
 
 # Utility for dumping a (list of) PyTorch tensor/variable.
-def fstr(var):
+def fstr(var, fmt="%.9f"):
   if type(var) is tuple and len(var) == 1: var = var[0]
 
   dim = var.dim()
@@ -39,7 +39,7 @@ def fstr(var):
     var = var.view(1, -1)
   ls = var.data.numpy().tolist()
   if type(ls[0]) is list: ls = ls[0]
-  ls = ["%.9f" % x for x in ls]
+  ls = [fmt % x for x in ls]
   return "[" + ",".join(ls) + "]"
 
 
@@ -408,7 +408,6 @@ class Sempar(nn.Module):
       # Number of top-k actions to consider. If all top-k actions are
       # infeasible, then we default to SHIFT or STOP.
       topk = self.spec.num_actions
-
       shift = actions.shift()
       stop = actions.stop()
       predicted = shift

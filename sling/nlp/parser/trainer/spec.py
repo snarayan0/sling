@@ -44,6 +44,10 @@ class Feature:
         if len(index) > 1: self.has_multi = True
 
 
+  def __repr__(self):
+    return str(self.indices)
+
+
 # Specification for a single link or fixed feature.
 class FeatureSpec:
   def __init__(self, name, dim, vocab=None, activation=None, num=1):
@@ -89,7 +93,6 @@ class Spec:
 
     # Lexicon generation settings.
     self.words_normalize_digits = True
-    self.suffixes_normalize_digits = False
     self.suffixes_max_length = 3
 
     # Action table percentile.
@@ -287,7 +290,7 @@ class Spec:
     # For compatibility with DRAGNN, suffixes don't have an OOV item.
     self.commons = commons
     self.words = Lexicon(self.words_normalize_digits)
-    self.suffix = Lexicon(self.suffixes_normalize_digits, oov_item=None)
+    self.suffix = Lexicon(normalize_digits=False, oov_item=None)
 
     corpora.rewind()
     corpora.set_gold(False)   # No need to compute gold transitions yet
