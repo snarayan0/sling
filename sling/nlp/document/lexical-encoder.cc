@@ -17,6 +17,7 @@
 #include "sling/myelin/builder.h"
 #include "sling/myelin/gradient.h"
 #include "sling/util/embeddings.h"
+#include "sling/util/unicode.h"
 
 using namespace sling::myelin;
 
@@ -30,9 +31,10 @@ void LexicalFeatures::LoadLexicon(Flow *flow) {
   int delimiter = vocabulary->GetAttr("delimiter", '\n');
   Vocabulary::BufferIterator it(vocabulary->data, vocabulary->size, delimiter);
   lexicon_.InitWords(&it);
-  bool normalize = vocabulary->GetAttr("normalize_digits", false);
+  NormalizationFlags normalization =
+      ParseNormalizationFlags(vocabulary->GetAttr("normalization"));
   int oov = vocabulary->GetAttr("oov", -1);
-  lexicon_.set_normalize_digits(normalize);
+  lexicon_.set_normalization(normalization);
   lexicon_.set_oov(oov);
 
   // Load affix tables.
@@ -44,6 +46,9 @@ void LexicalFeatures::LoadLexicon(Flow *flow) {
   if (suffix_table != nullptr) {
     lexicon_.InitSuffixes(suffix_table->data, suffix_table->size);
   }
+
+  // Pre-compute word shape features.
+  lexicon_.PrecomputeShapes();
 }
 
 void LexicalFeatures::SaveLexicon(myelin::Flow *flow) const {
@@ -51,7 +56,8 @@ void LexicalFeatures::SaveLexicon(myelin::Flow *flow) const {
   Flow::Blob *vocabulary = flow->AddBlob("lexicon", "dict");
   vocabulary->SetAttr("delimiter", 10);
   vocabulary->SetAttr("oov", lexicon_.oov());
-  vocabulary->SetAttr("normalize_digits", lexicon_.normalize_digits());
+  auto normalization = lexicon_.normalization();
+  vocabulary->SetAttr("normalization", NormalizationFlagsString(normalization));
   string buffer;
   lexicon_.WriteVocabulary(&buffer);
   vocabulary->data = flow->AllocateMemory(buffer);
@@ -84,14 +90,13 @@ void LexicalFeatures::InitializeLexicon(Vocabulary::Iterator *words,
   Text word;
   int count;
   int unknown = 0;
+  auto normalization = spec.normalization;
   while (words->Next(&word, &count)) {
     if (count < spec.threshold) {
       unknown += count;
-    } else if (spec.normalize_digits) {
-      string normalized = word.str();
-      for (char &c : normalized) {
-        if (c >= '0' && c <= '9') c = '9';
-      }
+    } else if (spec.normalization != NORMALIZE_NONE) {
+      string normalized;
+      UTF8::Normalize(word.data(), word.size(), normalization, &normalized);
       dictionary[normalized] += count;
     } else {
       dictionary[word.str()] += count;
@@ -109,13 +114,16 @@ void LexicalFeatures::InitializeLexicon(Vocabulary::Iterator *words,
   Vocabulary::VectorMapIterator it(word_list);
   lexicon_.InitWords(&it);
   lexicon_.set_oov(0);
-  lexicon_.set_normalize_digits(spec.normalize_digits);
+  lexicon_.set_normalization(normalization);
 
   // Build affix tables.
   prefix_size_ = spec.max_prefix;
   suffix_size_ = spec.max_suffix;
   lexicon_.BuildPrefixes(spec.max_prefix);
   lexicon_.BuildSuffixes(spec.max_suffix);
+
+  // Pre-compute word shape features.
+  lexicon_.PrecomputeShapes();
 }
 
 LexicalFeatures::Variables LexicalFeatures::Build(Flow *flow,
@@ -154,28 +162,28 @@ LexicalFeatures::Variables LexicalFeatures::Build(Flow *flow,
     features.push_back(f);
   }
   if (spec.hyphen_dim > 0) {
-    auto *f = tf.Feature("hyphen", DocumentFeatures::HYPHEN_CARDINALITY, 1,
+    auto *f = tf.Feature("hyphen", WordShape::HYPHEN_CARDINALITY, 1,
                          spec.hyphen_dim);
     features.push_back(f);
   }
   if (spec.caps_dim > 0) {
-    auto *f = tf.Feature("caps", DocumentFeatures::CAPITALIZATION_CARDINALITY,
-                         1, spec.caps_dim);
+    auto *f = tf.Feature("caps", WordShape::CAPITALIZATION_CARDINALITY, 1,
+                         spec.caps_dim);
     features.push_back(f);
   }
   if (spec.punct_dim > 0) {
-    auto *f = tf.Feature("punct", DocumentFeatures::PUNCTUATION_CARDINALITY,
-                         1, spec.punct_dim);
+    auto *f = tf.Feature("punct", WordShape::PUNCTUATION_CARDINALITY, 1,
+                         spec.punct_dim);
     features.push_back(f);
   }
   if (spec.quote_dim > 0) {
-    auto *f = tf.Feature("quote", DocumentFeatures::QUOTE_CARDINALITY,
-                         1, spec.quote_dim);
+    auto *f = tf.Feature("quote", WordShape::QUOTE_CARDINALITY, 1,
+                         spec.quote_dim);
     features.push_back(f);
   }
   if (spec.digit_dim > 0) {
-    auto *f = tf.Feature("digit", DocumentFeatures::DIGIT_CARDINALITY,
-                         1, spec.digit_dim);
+    auto *f = tf.Feature("digit", WordShape::DIGIT_CARDINALITY, 1,
+                         spec.digit_dim);
     features.push_back(f);
   }
 
@@ -256,7 +264,7 @@ int LexicalFeatures::LoadWordEmbeddings(Flow::Variable *matrix,
   int found = 0;
   while (reader.Next()) {
     // Check if word is in vocabulary
-    int row = lexicon_.LookupWord(reader.word(), nullptr);
+    int row = lexicon_.Lookup(reader.word());
     if (row == lexicon_.oov()) continue;
 
     // Copy embedding to matrix.
@@ -286,7 +294,7 @@ int LexicalFeatures::InitWordEmbeddings(const string &filename) {
   int found = 0;
   while (reader.Next()) {
     // Check if word is in vocabulary
-    int row = lexicon_.LookupWord(reader.word(), nullptr);
+    int row = lexicon_.Lookup(reader.word());
     if (row == lexicon_.oov()) continue;
 
     // Copy embedding to matrix.

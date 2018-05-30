@@ -66,6 +66,7 @@ DEFINE_int32(lexthres, 0, "Lexicon threshold");
 DEFINE_string(flow, "", "Flow file for saving trained POS tagger");
 DEFINE_bool(adam, false, "Use Adam optimizer");
 DEFINE_bool(optacc, false, "Decay learning rate based on accuracy");
+DEFINE_string(normalization, "", "Token normalization");
 
 using namespace sling;
 using namespace sling::myelin;
@@ -132,7 +133,7 @@ class Tagger {
     net_.options().flops_address = &flops_counter;
 
     // Set up lexical encoder spec.
-    spec_.lexicon.normalize_digits = true;
+    spec_.lexicon.normalization = ParseNormalizationFlags(FLAGS_normalization);
     spec_.word_embeddings = FLAGS_embeddings;
     spec_.train_word_embeddings = FLAGS_train_embeddings;
   }

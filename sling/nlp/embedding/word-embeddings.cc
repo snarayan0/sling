@@ -45,6 +45,9 @@ class WordEmbeddingsVocabularyMapper : public DocumentProcessor {
   void Startup(Task *task) override {
     // Initialize accumulator.
     accumulator_.Init(output(), 1 << 24);
+
+    // Get normalization flags.
+    normalization_ = ParseNormalizationFlags(task->Get("normalization", ""));
   }
 
   void Process(Slice key, const Document &document) override {
@@ -52,11 +55,10 @@ class WordEmbeddingsVocabularyMapper : public DocumentProcessor {
     for (const Token &token : document.tokens()) {
       // Normalize token.
       string normalized;
-      UTF8::Normalize(token.text(), &normalized);
+      UTF8::Normalize(token.text(), normalization_, &normalized);
 
-      // Discard empty tokens and punctuation tokens.
+      // Discard empty tokens.
       if (normalized.empty()) continue;
-      if (UTF8::IsPunctuation(normalized)) continue;
 
       // Output normalized token word.
       accumulator_.Increment(normalized);
@@ -70,6 +72,9 @@ class WordEmbeddingsVocabularyMapper : public DocumentProcessor {
  private:
   // Accumulator for word counts.
   Accumulator accumulator_;
+
+  // Token normalization flags.
+  NormalizationFlags normalization_;
 };
 
 REGISTER_TASK_PROCESSOR("word-embeddings-vocabulary-mapper",
@@ -192,9 +197,9 @@ class WordVocabularySampler {
   }
 
   // Look up word in dictionary. Return OOV for unknown words.
-  int Lookup(const string &word) const {
+  int Lookup(const string &word, NormalizationFlags flags) const {
     string normalized;
-    UTF8::Normalize(word, &normalized);
+    UTF8::Normalize(word, flags, &normalized);
     auto f = dictionary_.find(normalized);
     return f != dictionary_.end() ? f->second : oov_;
   }
@@ -364,6 +369,7 @@ class WordEmbeddingsTrainer : public Process {
     task->Fetch("subsampling", &subsampling_);
 
     // Load vocabulary.
+    normalization_ = ParseNormalizationFlags(task->Get("normalization", ""));
     vocabulary_.Load(task->GetInputFile("vocabulary"), subsampling_);
     int vocabulary_size = vocabulary_.size();
 
@@ -493,12 +499,9 @@ class WordEmbeddingsTrainer : public Process {
         // Get all the words in the sentence with sub-sampling.
         words.clear();
         for (int t = s.begin(); t < s.end(); ++t) {
-          // Skip punctuation tokens.
-          const string &word = document.token(t).text();
-          if (UTF8::IsPunctuation(word)) continue;
-
           // Sub-sample words.
-          int index = vocabulary_.Lookup(word);
+          const string &word = document.token(t).text();
+          int index = vocabulary_.Lookup(word, normalization_);
           if (rnd.UniformProb() < vocabulary_.SubsamplingProbability(index)) {
             words.push_back(index);
           }
@@ -557,6 +560,9 @@ class WordEmbeddingsTrainer : public Process {
   double min_learning_rate_ = 0.0001;  // minimum learning rate
   int embedding_dims_ = 256;           // size of embedding vectors
   double subsampling_ = 1e-3;          // sub-sampling rate
+
+  // Token normalization flags.
+  NormalizationFlags normalization_;
 
   // Vocabulary for embeddings.
   WordVocabularySampler vocabulary_;

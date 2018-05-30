@@ -16,6 +16,7 @@
 
 #include <string>
 
+#include "sling/base/logging.h"
 #include "sling/base/types.h"
 
 namespace sling {
@@ -36,8 +37,34 @@ const uint8 utf8_skip_tab[256] = {
   1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
   1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
   2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,
-  3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,4,4,4,4,4,4,4,4,5,5,5,5,6,6,1,1,
+  3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,
 };
+
+NormalizationFlags ParseNormalizationFlags(const string &spec) {
+  int flags = NORMALIZE_NONE;
+  for (char c : spec) {
+    switch (c) {
+      case 'c': flags |= NORMALIZE_CASE; break;
+      case 'l': flags |= NORMALIZE_LETTERS; break;
+      case 'd': flags |= NORMALIZE_DIGITS; break;
+      case 'p': flags |= NORMALIZE_PUNCTUATION; break;
+      case 'w': flags |= NORMALIZE_WHITESPACE; break;
+      default:
+        LOG(FATAL) << "Unknown normalization specifier: " << spec;
+    }
+  }
+  return static_cast<NormalizationFlags>(flags);
+}
+
+string NormalizationFlagsString(NormalizationFlags flags) {
+  string str;
+  if (flags & NORMALIZE_CASE) str.push_back('c');
+  if (flags & NORMALIZE_LETTERS) str.push_back('l');
+  if (flags & NORMALIZE_DIGITS) str.push_back('d');
+  if (flags & NORMALIZE_PUNCTUATION) str.push_back('p');
+  if (flags & NORMALIZE_WHITESPACE) str.push_back('w');
+  return str;
+}
 
 int Unicode::Category(int c) {
   if (c & unicode_tab_mask) return CHARCAT_UNASSIGNED;
@@ -141,11 +168,14 @@ int Unicode::ToUpper(int c) {
 
 int Unicode::Normalize(int c) {
   if (c & unicode_tab_mask) return c;
-  return unicode_normalize_tab[c];
+  return unicode_normalize_tab[unicode_lower_tab[c]];
 }
 
-int Unicode::Normalize(int c, NormalizationFlags flags) {
+int Unicode::Normalize(int c, int flags) {
   if (c & unicode_tab_mask) return c;
+  if (flags & NORMALIZE_CASE) {
+    c = unicode_lower_tab[c];
+  }
   if (flags & NORMALIZE_LETTERS) {
     c = unicode_normalize_tab[c];
   }
@@ -154,6 +184,9 @@ int Unicode::Normalize(int c, NormalizationFlags flags) {
   }
   if (flags & NORMALIZE_PUNCTUATION) {
     if (IsPunctuation(c)) c = 0;
+  }
+  if (flags & NORMALIZE_WHITESPACE) {
+    if (IsWhitespace(c)) c = 0;
   }
   return c;
 }
@@ -400,8 +433,7 @@ void UTF8::Lowercase(const char *s, int len, string *result) {
   }
 }
 
-void UTF8::Normalize(const char *s, int len, NormalizationFlags flags,
-                     string *normalized) {
+void UTF8::Normalize(const char *s, int len, int flags, string *normalized) {
   // Clear output string.
   normalized->clear();
 

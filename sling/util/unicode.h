@@ -65,11 +65,27 @@ enum UnicodeCategory {
 
 // String normalization flags.
 enum NormalizationFlags {
-  NORMALIZE_LETTERS     = 0x01,  // lowercase and remove diacritics
-  NORMALIZE_DIGITS      = 0x02,  // replace all digits with 9
-  NORMALIZE_PUNCTUATION = 0x04,  // remove punctuation
+  NORMALIZE_NONE        = 0x00,  // no normalization
+  NORMALIZE_CASE        = 0x01,  // lowercase
+  NORMALIZE_LETTERS     = 0x02,  // remove diacritics
+  NORMALIZE_DIGITS      = 0x04,  // replace all digits with 9
+  NORMALIZE_PUNCTUATION = 0x08,  // remove punctuation
+  NORMALIZE_WHITESPACE  = 0x10,  // remove whitespace
 };
 
+// Parse a list of normalization specifiers to a normalization bit mask.
+// The following specifiers are supported:
+//   c: NORMALIZE_CASE
+//   l: NORMALIZE_LETTERS
+//   d: NORMALIZE_DIGITS
+//   p: NORMALIZE_PUNCTUATION
+//   w: NORMALIZE_WHITESPACE
+NormalizationFlags ParseNormalizationFlags(const string &spec);
+
+// Return string with normalization specifiers for flags.
+string NormalizationFlagsString(NormalizationFlags flags);
+
+// Unicode code point categorization and conversion.
 class Unicode {
  public:
    // Return Unicode category for code point.
@@ -114,9 +130,12 @@ class Unicode {
    // Normalize code point to by lowercasing and removing punctuation and
    // diacritics. Return zero for code points that should be removed.
    static int Normalize(int c);
-   static int Normalize(int c, NormalizationFlags flags);
+
+   // Normalize code point based on normalization flags.
+   static int Normalize(int c, int flags);
 };
 
+// UTF-8 string categorization and conversion.
 class UTF8 {
  public:
   // Maximum length of UTF8 encoded code point.
@@ -170,14 +189,12 @@ class UTF8 {
   }
 
   // Normalize UTF8 encoded string for matching.
-  static void Normalize(const char *s, int len, NormalizationFlags flags,
-                        string *normalized);
-  static void Normalize(const string &str, NormalizationFlags flags,
-                        string *normalized) {
+  static void Normalize(const char *s, int len, int flags, string *normalized);
+  static void Normalize(const string &str, int flags, string *normalized) {
     Normalize(str.data(), str.size(), flags, normalized);
   }
   static void Normalize(const char *s, int len, string *normalized) {
-    Normalize(s, len, NORMALIZE_LETTERS, normalized);
+    Normalize(s, len, NORMALIZE_CASE | NORMALIZE_LETTERS, normalized);
   }
   static void Normalize(const string &str, string *normalized) {
     Normalize(str.data(), str.size(), normalized);
