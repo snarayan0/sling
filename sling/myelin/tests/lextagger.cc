@@ -63,10 +63,12 @@ DEFINE_int32(threads, cpu_cores, "Number of threads for training");
 DEFINE_int32(rampup, 10, "Number of seconds between thread starts");
 DEFINE_bool(lock, true, "Locked gradient updates");
 DEFINE_int32(lexthres, 0, "Lexicon threshold");
+DEFINE_int32(worddim, 32, "Word embedding dimensions");
+DEFINE_int32(lstm, 128, "LSTM size");
 DEFINE_string(flow, "", "Flow file for saving trained POS tagger");
 DEFINE_bool(adam, false, "Use Adam optimizer");
 DEFINE_bool(optacc, false, "Decay learning rate based on accuracy");
-DEFINE_string(normalization, "", "Token normalization");
+DEFINE_string(normalization, "d", "Token normalization");
 
 using namespace sling;
 using namespace sling::myelin;
@@ -134,6 +136,7 @@ class Tagger {
 
     // Set up lexical encoder spec.
     spec_.lexicon.normalization = ParseNormalizationFlags(FLAGS_normalization);
+    spec_.word_dim = FLAGS_worddim;
     spec_.word_embeddings = FLAGS_embeddings;
     spec_.train_word_embeddings = FLAGS_train_embeddings;
   }
@@ -201,9 +204,9 @@ class Tagger {
       Vocabulary::HashMapIterator vocab(words);
 
       // Build document input encoder.
-      lstm = encoder_.Build(flow, library_, spec_, &vocab, 128, true);
+      lstm = encoder_.Build(flow, library_, spec_, &vocab, FLAGS_lstm, true);
     } else {
-      lstm = encoder_.Build(flow, library_, spec_, nullptr, 128, false);
+      lstm = encoder_.Build(flow, library_, spec_, nullptr, FLAGS_lstm, false);
     }
 
     // Build flow for POS tagger.

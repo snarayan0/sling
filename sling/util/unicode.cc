@@ -71,6 +71,12 @@ int Unicode::Category(int c) {
   return (unicode_cat_tab[c] & CHARCAT_MASK);
 }
 
+bool Unicode::Is(int c, int mask) {
+  if (c & unicode_tab_mask) return false;
+  int category = unicode_cat_tab[c] & CHARCAT_MASK;
+  return ((1 << category) & mask) != 0;
+}
+
 bool Unicode::IsLower(int c) {
   if (c & unicode_tab_mask) return false;
   return (unicode_cat_tab[c] & CHARCAT_MASK) == CHARCAT_LOWERCASE_LETTER;
@@ -97,30 +103,15 @@ bool Unicode::IsDefined(int c) {
 }
 
 bool Unicode::IsLetter(int c) {
-  static const int letter_mask =
-    (1 << CHARCAT_UPPERCASE_LETTER) |
-    (1 << CHARCAT_LOWERCASE_LETTER) |
-    (1 << CHARCAT_TITLECASE_LETTER) |
-    (1 << CHARCAT_MODIFIER_LETTER) |
-    (1 << CHARCAT_OTHER_LETTER);
-
   if (c & unicode_tab_mask) return false;
   int category = unicode_cat_tab[c] & CHARCAT_MASK;
-  return ((1 << category) & letter_mask) != 0;
+  return ((1 << category) & CATMASK_LETTER) != 0;
 }
 
 bool Unicode::IsLetterOrDigit(int c) {
-  static const int letter_digit_mask =
-    (1 << CHARCAT_UPPERCASE_LETTER) |
-    (1 << CHARCAT_LOWERCASE_LETTER) |
-    (1 << CHARCAT_TITLECASE_LETTER) |
-    (1 << CHARCAT_MODIFIER_LETTER) |
-    (1 << CHARCAT_OTHER_LETTER) |
-    (1 << CHARCAT_DECIMAL_DIGIT_NUMBER);
-
   if (c & unicode_tab_mask) return false;
   int category = unicode_cat_tab[c] & CHARCAT_MASK;
-  return ((1 << category) & letter_digit_mask) != 0;
+  return ((1 << category) & CATMASK_LETTER_DIGIT) != 0;
 }
 
 bool Unicode::IsSpace(int c)  {
@@ -474,25 +465,46 @@ void UTF8::ToTitleCase(const string &str, string *titlecased) {
   }
 }
 
-bool UTF8::IsPunctuation(const char *s, int len) {
+bool UTF8::All(const char *s, int len, int mask) {
   // Try fast check where all characters are below 128.
   const char *end = s + len;
   while (s < end) {
     uint8 c = *reinterpret_cast<const uint8 *>(s);
     if (c & 0x80) break;
-    if (!Unicode::IsPunctuation(c)) return false;
+    if (!Unicode::Is(c, mask)) return false;
     s++;
   }
 
   // Handle any remaining part of the string which can contain multi-byte
   // characters.
   while (s < end) {
-    int code = Unicode::Normalize(Decode(s));
-    if (!Unicode::IsPunctuation(code)) return false;
+    int code = Decode(s);
+    if (!Unicode::Is(code, mask)) return false;
     s = Next(s);
   }
 
   return true;
+}
+
+bool UTF8::Any(const char *s, int len, int mask) {
+  // Try fast check where all characters are below 128.
+  const char *end = s + len;
+  while (s < end) {
+    uint8 c = *reinterpret_cast<const uint8 *>(s);
+    if (c & 0x80) break;
+    if (Unicode::Is(c, mask)) return true;
+    s++;
+  }
+
+  // Handle any remaining part of the string which can contain multi-byte
+  // characters.
+  while (s < end) {
+    int code = Decode(s);
+    if (Unicode::Is(code, mask)) return true;
+    s = Next(s);
+  }
+
+  return false;
 }
 
 }  // namespace sling

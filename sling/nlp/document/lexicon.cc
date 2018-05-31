@@ -206,10 +206,59 @@ int Lexicon::Lookup(const string &word,
     *prefix = entry.prefix;
     *suffix = entry.suffix;
     *shape = entry.shape;
+
+    // Due to normalization of the words in the lexicon, some of the
+    // pre-computed features need to be re-computed.
+    if (normalization_ & NORMALIZE_CASE) {
+      // Re-compute capitalization for case-normalized lexicon.
+      bool has_upper = false;
+      bool has_lower = false;
+      const char *p = word.data();
+      const char *end = p + word.size();
+      while (p < end) {
+        int code = UTF8::Decode(p);
+        if (Unicode::IsUpper(code)) has_upper = true;
+        if (Unicode::IsLower(code)) has_lower = true;
+        p = UTF8::Next(p);
+      }
+
+      if (!has_upper && has_lower) {
+        shape->capitalization = WordShape::LOWERCASE;
+      } else if (has_upper && !has_lower) {
+        shape->capitalization = WordShape::UPPERCASE;
+      } else if (!has_upper && !has_lower) {
+        shape->capitalization = WordShape::NON_ALPHABETIC;
+      } else {
+        shape->capitalization = WordShape::CAPITALIZED;
+      }
+    }
+    if (normalization_ & NORMALIZE_PUNCTUATION) {
+      // Re-compute punctuation for punctuation-normalized lexicon.
+      bool has_punctuation = false;
+      bool all_punctuation = true;
+      const char *p = word.data();
+      const char *end = p + word.size();
+      while (p < end) {
+        int code = UTF8::Decode(p);
+        bool is_punct = Unicode::IsPunctuation(code);
+        all_punctuation &= is_punct;
+        has_punctuation |= is_punct;
+        p = UTF8::Next(p);
+      }
+
+      if (all_punctuation) {
+        shape->punctuation = WordShape::ALL_PUNCTUATION;
+      } else if (has_punctuation) {
+        shape->punctuation = WordShape::SOME_PUNCTUATION;
+      } else {
+        shape->punctuation = WordShape::NO_PUNCTUATION;
+      }
+    }
+
     return id;
   }
 
-  // Compute affixes and shape feature on the fly for unknown words.
+  // Compute affixes and shape features on-the-fly for unknown words.
   if (prefixes_.max_length() > 0) {
     *prefix = prefixes_.GetLongestAffix(normalized);
   } else {

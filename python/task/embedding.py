@@ -54,7 +54,8 @@ class EmbeddingWorkflow:
       return self.wf.mapreduce(documents, output,
                                format="message/word:count",
                                mapper="word-embeddings-vocabulary-mapper",
-                               reducer="word-embeddings-vocabulary-reducer")
+                               reducer="word-embeddings-vocabulary-reducer",
+                               params={"normalization": "dlw"})
 
   def train_word_embeddings(self, documents=None, vocabulary=None, output=None,
                             language=None):
@@ -72,6 +73,7 @@ class EmbeddingWorkflow:
         "learning_rate": 0.025,
         "min_learning_rate": 0.0001,
         "embedding_dims": 32,
+        "normalization": "dlw",
         "subsampling": 1e-3,
       })
       trainer.attach_input("documents", documents)
