@@ -63,6 +63,54 @@ enum UnicodeCategory {
   CHARBIT_WHITESPACE                = 0x80,
 };
 
+// Unicode category masks.
+enum UnicodeCategoryMask {
+  // Lowercase letters.
+  CATMASK_LOWERCASE_LETTER =
+      (1 << CHARCAT_LOWERCASE_LETTER),
+
+  // Uppercase letters.
+  CATMASK_UPPERCASE_LETTER =
+      (1 << CHARCAT_UPPERCASE_LETTER),
+
+  // Titlecase letters.
+  CATMASK_TITLECASE_LETTER =
+      (1 << CHARCAT_TITLECASE_LETTER),
+
+  // Decimal digits.
+  CATMASK_DECIMAL_DIGIT_NUMBER =
+      (1 << CHARCAT_DECIMAL_DIGIT_NUMBER),
+
+  // Letters.
+  CATMASK_LETTER =
+      (1 << CHARCAT_UPPERCASE_LETTER) |
+      (1 << CHARCAT_LOWERCASE_LETTER) |
+      (1 << CHARCAT_TITLECASE_LETTER) |
+      (1 << CHARCAT_MODIFIER_LETTER) |
+      (1 << CHARCAT_OTHER_LETTER),
+
+  // Space separators.
+  CATMASK_SPACE =
+      (1 << CHARCAT_SPACE_SEPARATOR) |
+      (1 << CHARCAT_LINE_SEPARATOR) |
+      (1 << CHARCAT_PARAGRAPH_SEPARATOR),
+
+  // Punctuation.
+  CATMASK_PUNCTUATION =
+    (1 << CHARCAT_DASH_PUNCTUATION) |
+    (1 << CHARCAT_START_PUNCTUATION) |
+    (1 << CHARCAT_END_PUNCTUATION) |
+    (1 << CHARCAT_CONNECTOR_PUNCTUATION) |
+    (1 << CHARCAT_OTHER_PUNCTUATION) |
+    (1 << CHARCAT_INITIAL_QUOTE_PUNCTUATION) |
+    (1 << CHARCAT_FINAL_QUOTE_PUNCTUATION) |
+    (1 << CHARCAT_MODIFIER_SYMBOL) |
+    (1 << CHARCAT_OTHER_SYMBOL),
+
+  // Letters and digits.
+  CATMASK_LETTER_DIGIT = CATMASK_LETTER | CATMASK_DECIMAL_DIGIT_NUMBER,
+};
+
 // String normalization flags.
 enum NormalizationFlags {
   NORMALIZE_NONE        = 0x00,  // no normalization
@@ -90,6 +138,9 @@ class Unicode {
  public:
    // Return Unicode category for code point.
    static int Category(int c);
+
+   // Check if code point belongs to character mask.
+   static bool Is(int c, int mask);
 
    // Check if code point is lower case.
    static bool IsLower(int c);
@@ -157,7 +208,7 @@ class UTF8 {
 
   // Return pointer to previous UTF8 character in string.
   static const char *Previous(const char *s, const char *limit = nullptr);
-  static char *Previous(char *s, char *limit = nullptr);;
+  static char *Previous(char *s, char *limit = nullptr);
 
   // Check if string is structurally valid.
   static bool Valid(const char *s, int len);
@@ -203,10 +254,32 @@ class UTF8 {
   // Convert string to title case, i.e. make the first letter uppercase.
   static void ToTitleCase(const string &str, string *titlecased);
 
+  // Check if all characters belong to character mask.
+  static bool All(const char *s, int len, int mask);
+  static bool All(const string &str, int mask) {
+    return All(str.data(), str.size(), mask);
+  }
+
+  // Check if any characters belong to character mask.
+  static bool Any(const char *s, int len, int mask);
+  static bool Any(const string &str, int mask) {
+    return Any(str.data(), str.size(), mask);
+  }
+
   // Check if all characters are punctuation characters.
-  static bool IsPunctuation(const char *s, int len);
+  static bool IsPunctuation(const char *s, int len) {
+    return All(s, len, CATMASK_PUNCTUATION);
+  }
   static bool IsPunctuation(const string &str) {
     return IsPunctuation(str.data(), str.size());
+  }
+
+  // Check if all characters are space characters.
+  static bool IsSpace(const char *s, int len) {
+    return All(s, len, CATMASK_SPACE);
+  }
+  static bool IsSpace(const string &str) {
+    return IsSpace(str.data(), str.size());
   }
 };
 

@@ -641,17 +641,18 @@ void Store::InsertSymbol(SymbolDatum *symbol) {
 }
 
 Handle Store::FindSymbol(Text name, Handle hash) const {
-  const MapDatum *symbols = GetMap(symbols_);
-  Handle h = *symbols->bucket(hash);
-  while (!h.IsNil()) {
-    const SymbolDatum *symbol = GetSymbol(h);
-    if (symbol->hash == hash) {
-      const Datum *symname = GetObject(symbol->name);
-      if (symname->IsString() && symname->AsString()->equals(name)) return h;
+  if (num_symbols_ > 0) {
+    const MapDatum *symbols = GetMap(symbols_);
+    Handle h = *symbols->bucket(hash);
+    while (!h.IsNil()) {
+      const SymbolDatum *symbol = GetSymbol(h);
+      if (symbol->hash == hash) {
+        const Datum *symname = GetObject(symbol->name);
+        if (symname->IsString() && symname->AsString()->equals(name)) return h;
+      }
+      h = symbol->next;
     }
-    h = symbol->next;
   }
-
   return Handle::nil();
 }
 
