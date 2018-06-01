@@ -167,12 +167,13 @@ LexicalFeatures::Variables LexicalFeatures::Build(Flow *flow,
     features.push_back(f);
   }
   if (spec.caps_dim > 0) {
-    auto *f = tf.Feature("caps", WordShape::CAPITALIZATION_CARDINALITY, 1,
+    auto *f = tf.Feature("capitalization",
+                         WordShape::CAPITALIZATION_CARDINALITY, 1,
                          spec.caps_dim);
     features.push_back(f);
   }
   if (spec.punct_dim > 0) {
-    auto *f = tf.Feature("punct", WordShape::PUNCTUATION_CARDINALITY, 1,
+    auto *f = tf.Feature("punctuation", WordShape::PUNCTUATION_CARDINALITY, 1,
                          spec.punct_dim);
     features.push_back(f);
   }
@@ -252,15 +253,18 @@ int LexicalFeatures::LoadWordEmbeddings(Flow::Variable *matrix,
   EmbeddingReader reader(filename);
   reader.set_normalize(true);
 
-  // Check that embedding matrix matches embeddings and vocabulary.
+  // Check that embedding matrix matches embeddings and vocabulary. If the
+  // embeddings are smaller than the embedding matrix, the remaining elements
+  // are zeroed.
   CHECK_EQ(matrix->rank(), 2);
   CHECK_EQ(matrix->type, DT_FLOAT);
   CHECK_EQ(matrix->dim(0), lexicon_.size());
-  CHECK_EQ(matrix->dim(1), reader.dim());
+  CHECK_GE(matrix->dim(1), reader.dim());
   CHECK(matrix->data != nullptr);
 
   // Initialize matrix with pre-trained word embeddings.
-  int rowsize = reader.dim() * sizeof(float);
+  int rowsize = matrix->dim(1) * sizeof(float);
+  int datasize = reader.dim() * sizeof(float);
   int found = 0;
   while (reader.Next()) {
     // Check if word is in vocabulary
@@ -268,8 +272,11 @@ int LexicalFeatures::LoadWordEmbeddings(Flow::Variable *matrix,
     if (row == lexicon_.oov()) continue;
 
     // Copy embedding to matrix.
-    void *f = matrix->data + row * rowsize;
-    memcpy(f, reader.embedding().data(), rowsize);
+    char *f = matrix->data + row * rowsize;
+    memcpy(f, reader.embedding().data(), datasize);
+    if (datasize < rowsize) {
+      memset(f + datasize, 0, rowsize - datasize);
+    }
     found++;
   }
 
@@ -281,16 +288,19 @@ int LexicalFeatures::InitWordEmbeddings(const string &filename) {
   EmbeddingReader reader(filename);
   reader.set_normalize(true);
 
-  // Check that embedding matrix matches embeddings and vocabulary.
+  // Check that embedding matrix matches embeddings and vocabulary. If the
+  // embeddings are smaller than the embedding matrix, the remaining elements
+  // are zeroed.
   CHECK(word_embeddings_ != nullptr);
   CHECK_EQ(word_embeddings_->rank(), 2);
   CHECK_EQ(word_embeddings_->type(), DT_FLOAT);
   CHECK_EQ(word_embeddings_->dim(0), lexicon_.size());
-  CHECK_EQ(word_embeddings_->dim(1), reader.dim());
+  CHECK_GE(word_embeddings_->dim(1), reader.dim());
   CHECK(word_embeddings_->data() != nullptr);
 
   // Initialize matrix with pre-trained word embeddings.
-  int rowsize = reader.dim() * sizeof(float);
+  int rowsize = word_embeddings_->dim(1) * sizeof(float);
+  int datasize = reader.dim() * sizeof(float);
   int found = 0;
   while (reader.Next()) {
     // Check if word is in vocabulary
@@ -298,8 +308,11 @@ int LexicalFeatures::InitWordEmbeddings(const string &filename) {
     if (row == lexicon_.oov()) continue;
 
     // Copy embedding to matrix.
-    void *f = word_embeddings_->data() + word_embeddings_->offset(row);
-    memcpy(f, reader.embedding().data(), rowsize);
+    char *f = word_embeddings_->data() + word_embeddings_->offset(row);
+    memcpy(f, reader.embedding().data(), datasize);
+    if (datasize < rowsize) {
+      memset(f + datasize, 0, rowsize - datasize);
+    }
     found++;
   }
   return found;

@@ -28,9 +28,9 @@ void WordShape::Extract(const string &word) {
   bool has_upper = false;
   bool has_lower = false;
   bool has_punctuation = false;
-  bool all_punctuation = true;
+  bool all_punctuation = !word.empty();
   bool has_digit = false;
-  bool all_digit = true;
+  bool all_digit = !word.empty();
   const char *p = word.data();
   const char *end = p + word.size();
   while (p < end) {
@@ -235,7 +235,7 @@ int Lexicon::Lookup(const string &word,
     if (normalization_ & NORMALIZE_PUNCTUATION) {
       // Re-compute punctuation for punctuation-normalized lexicon.
       bool has_punctuation = false;
-      bool all_punctuation = true;
+      bool all_punctuation = !word.empty();
       const char *p = word.data();
       const char *end = p + word.size();
       while (p < end) {
