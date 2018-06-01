@@ -115,14 +115,7 @@ bool Unicode::IsLetterOrDigit(int c) {
 }
 
 bool Unicode::IsSpace(int c)  {
-  static const int space_mask =
-    (1 << CHARCAT_SPACE_SEPARATOR) |
-    (1 << CHARCAT_LINE_SEPARATOR) |
-    (1 << CHARCAT_PARAGRAPH_SEPARATOR);
-
-  if (c & unicode_tab_mask) return false;
-  int category = unicode_cat_tab[c] & CHARCAT_MASK;
-  return ((1 << category) & space_mask) != 0;
+  return Is(c, CATMASK_SPACE);
 }
 
 bool Unicode::IsWhitespace(int c) {
@@ -131,20 +124,7 @@ bool Unicode::IsWhitespace(int c) {
 }
 
 bool Unicode::IsPunctuation(int c) {
-  static const int punctuation_mask =
-    (1 << CHARCAT_DASH_PUNCTUATION) |
-    (1 << CHARCAT_START_PUNCTUATION) |
-    (1 << CHARCAT_END_PUNCTUATION) |
-    (1 << CHARCAT_CONNECTOR_PUNCTUATION) |
-    (1 << CHARCAT_OTHER_PUNCTUATION) |
-    (1 << CHARCAT_INITIAL_QUOTE_PUNCTUATION) |
-    (1 << CHARCAT_FINAL_QUOTE_PUNCTUATION) |
-    (1 << CHARCAT_MODIFIER_SYMBOL) |
-    (1 << CHARCAT_OTHER_SYMBOL);
-
-  if (c & unicode_tab_mask) return false;
-  int category = unicode_cat_tab[c] & CHARCAT_MASK;
-  return ((1 << category) & punctuation_mask) != 0;
+  return Is(c, CATMASK_PUNCTUATION);
 }
 
 int Unicode::ToLower(int c) {
@@ -155,11 +135,6 @@ int Unicode::ToLower(int c) {
 int Unicode::ToUpper(int c) {
   if (c & unicode_tab_mask) return c;
   return unicode_upper_tab[c];
-}
-
-int Unicode::Normalize(int c) {
-  if (c & unicode_tab_mask) return c;
-  return unicode_normalize_tab[unicode_lower_tab[c]];
 }
 
 int Unicode::Normalize(int c, int flags) {

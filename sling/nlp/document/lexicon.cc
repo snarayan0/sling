@@ -274,12 +274,8 @@ int Lexicon::Lookup(const string &word,
 }
 
 int Lexicon::Lookup(const string &word) const {
-  // Normalize word.
-  string normalized;
-  UTF8::Normalize(word, normalization_, &normalized);
-
   // Look up word in vocabulary.
-  int id = vocabulary_.Lookup(normalized);
+  int id = vocabulary_.Lookup(word);
   return id == -1 ? oov_ : id;
 }
 

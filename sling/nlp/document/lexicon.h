@@ -113,6 +113,8 @@ class Lexicon {
   int Lookup(const string &word,
              Affix **prefix, Affix **suffix,
              WordShape *shape) const;
+
+  // Look up word in lexicon. No normalization is performed.
   int Lookup(const string &word) const;
 
   // Return number of words in vocabulary.

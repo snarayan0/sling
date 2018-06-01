@@ -178,12 +178,17 @@ class Unicode {
    // Convert code point to upper case.
    static int ToUpper(int c);
 
-   // Normalize code point to by lowercasing and removing punctuation and
-   // diacritics. Return zero for code points that should be removed.
-   static int Normalize(int c);
-
-   // Normalize code point based on normalization flags.
+   // Normalize code point based on normalization flags. Return zero for code
+   // points that should be removed.
    static int Normalize(int c, int flags);
+
+   // Normalize code point to by lowercasing and removing punctuation and
+   // diacritics.
+   static int Normalize(int c) {
+     return Normalize(c, NORMALIZE_CASE |
+                         NORMALIZE_LETTERS |
+                         NORMALIZE_PUNCTUATION);
+   }
 };
 
 // UTF-8 string categorization and conversion.
