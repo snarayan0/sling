@@ -97,7 +97,7 @@ class FlowBuilder : public Scope {
   Variable *Op(const string &op, const std::vector<Variable *> &args);
 
   // Add operation with no output to function.
-  Operation *Op0(const string &op, const std::vector<Variable *> &args);
+  Operation *RawOp(const string &op, const std::vector<Variable *> &args);
 
   // Add constant to flow.
   Variable *Const(const void *data, Type type, const Shape &shape);
@@ -136,8 +136,8 @@ class FlowBuilder : public Scope {
   Variable *Sub(Variable *x, Variable *y) { return Op("Sub", {x, y}); }
   Variable *Mul(Variable *x, Variable *y) { return Op("Mul", {x, y}); }
   Variable *Div(Variable *x, Variable *y) { return Op("Div", {x, y}); }
-  Variable *Min(Variable *x, Variable *y) { return Op("Minimum", {x, y}); }
-  Variable *Max(Variable *x, Variable *y) { return Op("Maximum", {x, y}); }
+  Variable *Minimum(Variable *x, Variable *y) { return Op("Minimum", {x, y}); }
+  Variable *Maximum(Variable *x, Variable *y) { return Op("Maximum", {x, y}); }
   Variable *Neg(Variable *x) { return Op("Neg", {x}); }
   Variable *Square(Variable *x) { return Op("Square", {x}); }
   Variable *Sqrt(Variable *x) { return Op("Sqrt", {x}); }
@@ -161,8 +161,47 @@ class FlowBuilder : public Scope {
     return MatMul(Reshape(x, {1, size}), Reshape(y, {size, 1}));
   }
 
+  // Matrix transpose.
   Variable *Transpose(Variable *x) {
     return Op("Transpose", {x}, x->type, x->shape.transpose());
+  }
+
+  // Reductions.
+  Variable *Sum(Variable *x) { return Op("Sum", {x}, x->type, {}); }
+  Variable *Product(Variable *x) { return Op("Product", {x}, x->type, {}); }
+  Variable *Max(Variable *x) { return Op("Max", {x}, x->type, {}); }
+  Variable *Min(Variable *x) { return Op("Min", {x}, x->type, {}); }
+  Variable *Mean(Variable *x) {
+    float size = x->elements();
+    return Div(Sum(x), Const(size));
+  }
+
+  // Dot product between two vectors.
+  Variable *DotProduct(Variable *x, Variable *y) {
+    return Sum(Mul(x,y));
+  }
+
+  // L2 norm of vector.
+  Variable *L2Norm(Variable *v) { return Sqrt(Sum(Square(v))); }
+
+  // Cosine similarity.
+  Variable *CosSim(Variable *x, Variable *y) {
+    return Div(DotProduct(x, y), Mul(L2Norm(x), L2Norm(y)));
+  }
+
+  // Cosine distance.
+  Variable *CosDist(Variable *x, Variable *y) {
+    return Sub(One(), CosSim(x, y));
+  }
+
+  // Normalize.
+  Variable *Normalize(Variable *x) {
+    return Mul(x, Reciprocal(Sum(x)));
+  }
+
+  // Softmax.
+  Variable *Softmax2(Variable *x) {
+    return Normalize(Exp(Sub(x, Max(x))));
   }
 
   // Reshaping.
@@ -195,11 +234,11 @@ class FlowBuilder : public Scope {
 
   // Assignment.
   Operation *Assign(Variable *var, Variable *value) {
-    return Op0("Assign", {var, value});
+    return RawOp("Assign", {var, value});
   }
 
   Operation *AssignAdd(Variable *var, Variable *value) {
-    return Op0("Assign", {var, Add(var, value)});
+    return RawOp("Assign", {var, Add(var, value)});
   }
 
   Variable *Accumulate(Variable *var, Variable *value) {
@@ -207,7 +246,7 @@ class FlowBuilder : public Scope {
   }
 
   Operation *ScatterAdd(Variable *M, Variable *f, Variable *v) {
-    return Op0("ScatterAdd", {M, f, v});
+    return RawOp("ScatterAdd", {M, f, v});
   }
 
   // Concatenation.

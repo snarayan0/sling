@@ -826,6 +826,23 @@ char *Step::AllocateKernelMemory(size_t size, int alignment) {
   return kernel_memory_;
 }
 
+Tensor *Step::GetPrototype() const {
+  Tensor *prototype = nullptr;
+  for (Tensor *output : outputs_) {
+    if (prototype == nullptr || output->elements() > prototype->elements()) {
+      prototype = output;
+    }
+  }
+  if (prototype == nullptr || prototype->rank() == 0) {
+    for (Tensor *input : inputs_) {
+      if (prototype == nullptr || input->elements() > prototype->elements()) {
+        prototype = input;
+      }
+    }
+  }
+  return prototype;
+}
+
 Network::Network() {
   runtime_ = &default_runtime;
   linker_ = &jit_linker;

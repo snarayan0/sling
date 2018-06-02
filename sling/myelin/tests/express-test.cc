@@ -13,7 +13,7 @@ void Test(const string &str) {
   bool three_arg_ops = true;
   Express::Target target = Express::INTEL;
   bool fma = true;
-  bool hoist = 5;
+  int spare = 10;
   bool live_ranges = true;
 
   Express::Model model;
@@ -68,6 +68,11 @@ void Test(const string &str) {
     fma = false;
   }
 
+  if (fma) {
+    model.fm_reg_reg_reg = true;
+    model.fm_reg_reg_imm = true;
+  }
+
   LOG(INFO) << "Expression: " << str;
   Express expr(target);
   expr.Parse(str, true);
@@ -80,17 +85,8 @@ void Test(const string &str) {
     }
   }
 
-  expr.EliminateCommonSubexpressions();
+  expr.Optimize(fma, spare);
 
-  if (fma) {
-    expr.FuseMulAdd();
-    if (target != Express::NVIDIA) expr.FuseMulSub();
-    model.fm_reg_reg_reg = true;
-    model.fm_reg_reg_imm = true;
-  }
-
-  expr.CacheResults();
-  if (hoist > 0) expr.Hoist(hoist);
   int addr = 0;
   for (auto *op : expr.ops()) {
     if (expr.body() > 0 && op == expr.ops()[expr.body()]) {
@@ -214,6 +210,10 @@ int main(int argc, char *argv[]) {
   //Test("$2=Add(%4,%5);@0=Mul(Mul($2,%0),Mul(%3,Sub(_1,%3)));@1=Add(%6,Mul(Mul(%3,$2),Sub(_1,Square(%0))))");
   //Test("$0=Neg(%0);@0=Mul($0,Div(_1,Max(%1,_1)));@1=Mul($0,Div(_1,Max(%2,_1)));@2=Mul($0,Div(_1,Max(%3,_1)));@3=Mul($0,Div(_1,Max(%4,_1)))"); return 0;
   //Test("@0=Log(%0)");
-  Test("@0=Id(Add(%0,Mul(%2,%1)))");
+  //Test("@0=Id(Add(%0,Mul(%2,%1)))");
+  //Test("@0=Sum(Mul(%0,%0))");
+  Test("@0=Sum(Mul(%0,%1));@1=Sum(Square(%0));@2=Sum(Square(%1))");
+  //Test("@0=Sum(%0)");
+  //Test("@0=Exp(%0);@1=Sum(@0)");
 }
 
