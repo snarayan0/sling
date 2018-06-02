@@ -135,7 +135,7 @@ class Tagger {
     net_.options().flops_address = &flops_counter;
 
     // Set up lexical encoder spec.
-    spec_.lexicon.normalization = ParseNormalizationFlags(FLAGS_normalization);
+    spec_.lexicon.normalization = ParseNormalization(FLAGS_normalization);
     spec_.word_dim = FLAGS_worddim;
     spec_.word_embeddings = FLAGS_embeddings;
     spec_.train_word_embeddings = FLAGS_train_embeddings;

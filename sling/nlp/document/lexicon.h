@@ -129,8 +129,8 @@ class Lexicon {
   void set_oov(int oov) { oov_ = oov; }
 
   // Token normalization flags.
-  NormalizationFlags normalization() const { return normalization_; }
-  void set_normalization(NormalizationFlags normalization) {
+  Normalization normalization() const { return normalization_; }
+  void set_normalization(Normalization normalization) {
     normalization_ = normalization;
   }
 
@@ -145,7 +145,7 @@ class Lexicon {
 
   // Mapping from words to ids.
   Vocabulary vocabulary_;
-  NormalizationFlags normalization_ = NORMALIZE_NONE;
+  Normalization normalization_ = NORMALIZE_NONE;
   int oov_ = -1;
 
   // Lexicon entries.

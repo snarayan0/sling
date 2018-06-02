@@ -34,7 +34,7 @@ class LexicalFeatures {
   // Lexicon configuration specification.
   struct LexiconSpec {
     // Token normalization.
-    NormalizationFlags normalization = NORMALIZE_NONE;
+    Normalization normalization = NORMALIZE_NONE;
 
     int threshold = 0;              // threshold frequency for words in lexicon
     int max_prefix = 3;             // max prefix length

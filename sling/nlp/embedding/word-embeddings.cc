@@ -47,7 +47,7 @@ class WordEmbeddingsVocabularyMapper : public DocumentProcessor {
     accumulator_.Init(output(), 1 << 24);
 
     // Get normalization flags.
-    normalization_ = ParseNormalizationFlags(task->Get("normalization", ""));
+    normalization_ = ParseNormalization(task->Get("normalization", ""));
   }
 
   void Process(Slice key, const Document &document) override {
@@ -74,7 +74,7 @@ class WordEmbeddingsVocabularyMapper : public DocumentProcessor {
   Accumulator accumulator_;
 
   // Token normalization flags.
-  NormalizationFlags normalization_;
+  Normalization normalization_;
 };
 
 REGISTER_TASK_PROCESSOR("word-embeddings-vocabulary-mapper",
@@ -197,7 +197,7 @@ class WordVocabularySampler {
   }
 
   // Look up word in dictionary. Return OOV for unknown words.
-  int Lookup(const string &word, NormalizationFlags flags) const {
+  int Lookup(const string &word, Normalization flags) const {
     string normalized;
     UTF8::Normalize(word, flags, &normalized);
     auto f = dictionary_.find(normalized);
@@ -369,7 +369,7 @@ class WordEmbeddingsTrainer : public Process {
     task->Fetch("subsampling", &subsampling_);
 
     // Load vocabulary.
-    normalization_ = ParseNormalizationFlags(task->Get("normalization", ""));
+    normalization_ = ParseNormalization(task->Get("normalization", ""));
     vocabulary_.Load(task->GetInputFile("vocabulary"), subsampling_);
     int vocabulary_size = vocabulary_.size();
 
@@ -562,7 +562,7 @@ class WordEmbeddingsTrainer : public Process {
   double subsampling_ = 1e-3;          // sub-sampling rate
 
   // Token normalization flags.
-  NormalizationFlags normalization_;
+  Normalization normalization_;
 
   // Vocabulary for embeddings.
   WordVocabularySampler vocabulary_;

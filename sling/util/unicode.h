@@ -112,7 +112,7 @@ enum UnicodeCategoryMask {
 };
 
 // String normalization flags.
-enum NormalizationFlags {
+enum Normalization {
   NORMALIZE_NONE        = 0x00,  // no normalization
   NORMALIZE_CASE        = 0x01,  // lowercase
   NORMALIZE_LETTERS     = 0x02,  // remove diacritics
@@ -128,10 +128,10 @@ enum NormalizationFlags {
 //   d: NORMALIZE_DIGITS
 //   p: NORMALIZE_PUNCTUATION
 //   w: NORMALIZE_WHITESPACE
-NormalizationFlags ParseNormalizationFlags(const string &spec);
+Normalization ParseNormalization(const string &spec);
 
 // Return string with normalization specifiers for flags.
-string NormalizationFlagsString(NormalizationFlags flags);
+string NormalizationString(Normalization normalization);
 
 // Unicode code point categorization and conversion.
 class Unicode {

@@ -40,7 +40,7 @@ const uint8 utf8_skip_tab[256] = {
   3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,
 };
 
-NormalizationFlags ParseNormalizationFlags(const string &spec) {
+Normalization ParseNormalization(const string &spec) {
   int flags = NORMALIZE_NONE;
   for (char c : spec) {
     switch (c) {
@@ -53,16 +53,16 @@ NormalizationFlags ParseNormalizationFlags(const string &spec) {
         LOG(FATAL) << "Unknown normalization specifier: " << spec;
     }
   }
-  return static_cast<NormalizationFlags>(flags);
+  return static_cast<Normalization>(flags);
 }
 
-string NormalizationFlagsString(NormalizationFlags flags) {
+string NormalizationString(Normalization normalization) {
   string str;
-  if (flags & NORMALIZE_CASE) str.push_back('c');
-  if (flags & NORMALIZE_LETTERS) str.push_back('l');
-  if (flags & NORMALIZE_DIGITS) str.push_back('d');
-  if (flags & NORMALIZE_PUNCTUATION) str.push_back('p');
-  if (flags & NORMALIZE_WHITESPACE) str.push_back('w');
+  if (normalization & NORMALIZE_CASE) str.push_back('c');
+  if (normalization & NORMALIZE_LETTERS) str.push_back('l');
+  if (normalization & NORMALIZE_DIGITS) str.push_back('d');
+  if (normalization & NORMALIZE_PUNCTUATION) str.push_back('p');
+  if (normalization & NORMALIZE_WHITESPACE) str.push_back('w');
   return str;
 }
 

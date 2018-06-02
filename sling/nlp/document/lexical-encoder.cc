@@ -31,8 +31,8 @@ void LexicalFeatures::LoadLexicon(Flow *flow) {
   int delimiter = vocabulary->GetAttr("delimiter", '\n');
   Vocabulary::BufferIterator it(vocabulary->data, vocabulary->size, delimiter);
   lexicon_.InitWords(&it);
-  NormalizationFlags normalization =
-      ParseNormalizationFlags(vocabulary->GetAttr("normalization"));
+  Normalization normalization =
+      ParseNormalization(vocabulary->GetAttr("normalization"));
   int oov = vocabulary->GetAttr("oov", -1);
   lexicon_.set_normalization(normalization);
   lexicon_.set_oov(oov);
@@ -57,7 +57,7 @@ void LexicalFeatures::SaveLexicon(myelin::Flow *flow) const {
   vocabulary->SetAttr("delimiter", 10);
   vocabulary->SetAttr("oov", lexicon_.oov());
   auto normalization = lexicon_.normalization();
-  vocabulary->SetAttr("normalization", NormalizationFlagsString(normalization));
+  vocabulary->SetAttr("normalization", NormalizationString(normalization));
   string buffer;
   lexicon_.WriteVocabulary(&buffer);
   vocabulary->data = flow->AllocateMemory(buffer);
