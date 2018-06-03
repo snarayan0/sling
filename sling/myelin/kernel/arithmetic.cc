@@ -466,6 +466,9 @@ class ExpressionTransformer : public Transformer {
     }
 
     // Check for indirect dependencies between ops.
+    for (auto *v : first->inputs) {
+      if (v->producer != second && v->DependsOn(second)) return false;
+    }
     for (auto *v : second->inputs) {
       if (v->producer != first && v->DependsOn(first)) return false;
     }

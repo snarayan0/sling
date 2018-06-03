@@ -928,6 +928,7 @@ bool Network::Compile(const Flow &flow, const Library &library) {
   jit::CPU::Probe();
 
   // Create tensors for all the variables (parameters and constants).
+  DCHECK(flow.IsConsistent());
   std::unordered_map<void *, Tensor *> tensors;
   for (Flow::Variable *var : flow.vars()) {
     Tensor *tensor = new Tensor();

@@ -151,8 +151,6 @@ class FlowBuilder : public Scope {
   Variable *Identity(Variable *x) { return Op("Identity", {x}); }
   Variable *Cos(Variable *x) { return Op("Cos", {x}); }
   Variable *Sin(Variable *x) { return Op("Sin", {x}); }
-  Variable *Softmax(Variable *x) { return Op("Softmax", {x}); }
-  Variable *Norm(Variable *v) { return Op("Norm", {v}, v->type, {}); }
 
   // Matrix multiplication.
   Variable *MatMul(Variable *x, Variable *y);
@@ -182,11 +180,11 @@ class FlowBuilder : public Scope {
   }
 
   // L2 norm of vector.
-  Variable *L2Norm(Variable *v) { return Sqrt(Sum(Square(v))); }
+  Variable *Norm(Variable *v) { return Sqrt(Sum(Square(v))); }
 
   // Cosine similarity.
   Variable *CosSim(Variable *x, Variable *y) {
-    return Div(DotProduct(x, y), Mul(L2Norm(x), L2Norm(y)));
+    return Div(DotProduct(x, y), Mul(Norm(x), Norm(y)));
   }
 
   // Cosine distance.
@@ -195,14 +193,11 @@ class FlowBuilder : public Scope {
   }
 
   // Normalize.
-  Variable *Normalize(Variable *x) {
-    return Mul(x, Reciprocal(Sum(x)));
-  }
+  Variable *Normalize(Variable *x) { return Mul(x, Reciprocal(Sum(x))); }
 
   // Softmax.
-  Variable *Softmax2(Variable *x) {
-    return Normalize(Exp(Sub(x, Max(x))));
-  }
+  Variable *Softmax(Variable *x) { return Normalize(Exp(Sub(x, Max(x)))); }
+  Variable *LogSoftmax(Variable *x) { return Log(Softmax(x)); }
 
   // Reshaping.
   Variable *Reshape(Variable *x, Variable *shape) {
