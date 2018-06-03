@@ -777,6 +777,9 @@ void Express::Hoist(int limit) {
         }
       }
 
+      // Never hoist reduction ops.
+      if (op->reduction()) continue;
+
       // Move instruction out of the body if it is loop-invariant.
       if (invariant) {
         for (int j = i; j > body_; --j) ops_[j] = ops_[j - 1];
